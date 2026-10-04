@@ -1,0 +1,32 @@
+*.iml
+.gradle
+/local.properties
+/.idea/
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+*.apk
+*.aab
+*.ap_
+output.json
+
+# Android Studio / IntelliJ
+.idea/caches
+.idea/libraries
+.idea/modules.xml
+.idea/workspace.xml
+.idea/navEditor.xml
+.idea/assetWizardSettings.xml
+.idea/compiler.xml
+.idea/jarRepositories.xml
+.idea/kotlinc.xml
+.idea/vcs.xml
+
+# Keystore files
+*.jks
+*.keystore
+
+# Build files in submodules
+app/build/
