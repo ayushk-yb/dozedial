@@ -2,11 +2,11 @@ package com.dozedial.ui
 
 import android.Manifest
 import android.bluetooth.BluetoothAdapter
-import com.dozedial.data.HeartRateSample
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -33,38 +33,55 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.BluetoothDisabled
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Nightlight
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Speed
-import androidx.compose.material.icons.filled.Watch
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DividerDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -75,13 +92,22 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.dozedial.ble.BleConnectionState
 import com.dozedial.ble.BleDevice
 import com.dozedial.ble.HeartRateParser
+import com.dozedial.data.HeartRateSample
+import com.dozedial.data.db.HeartRateRecordEntity
+import com.dozedial.data.db.SleepSessionEntity
+import com.dozedial.service.HeartRateCollectionService
+import kotlinx.coroutines.launch
+import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import kotlin.math.roundToInt
 
 class MainActivity : ComponentActivity() {
 
@@ -108,25 +134,29 @@ class MainActivity : ComponentActivity() {
 }
 
 /**
- * Returns the list of Bluetooth runtime permissions required for the current Android version.
+ * Returns the list of runtime permissions required for BLE and foreground notification operations.
  */
 fun getRequiredBlePermissions(): Array<String> {
-    return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-        arrayOf(
-            Manifest.permission.BLUETOOTH_SCAN,
-            Manifest.permission.BLUETOOTH_CONNECT
-        )
+    val list = mutableListOf<String>()
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        list.add(Manifest.permission.BLUETOOTH_SCAN)
+        list.add(Manifest.permission.BLUETOOTH_CONNECT)
     } else {
-        arrayOf(
-            Manifest.permission.ACCESS_FINE_LOCATION
-        )
+        list.add(Manifest.permission.ACCESS_FINE_LOCATION)
     }
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        list.add(Manifest.permission.POST_NOTIFICATIONS)
+    }
+    return list.toTypedArray()
 }
 
 @Composable
 fun MainScreen(viewModel: MainViewModel) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+
+    var selectedTabIndex by rememberSaveable { mutableIntStateOf(0) }
 
     var hasPermissions by remember {
         mutableStateOf(
@@ -148,104 +178,331 @@ fun MainScreen(viewModel: MainViewModel) {
         viewModel.refreshBluetoothState()
     }
 
+    val shareLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) {}
+
     LaunchedEffect(Unit) {
         if (!hasPermissions) {
             permissionLauncher.launch(getRequiredBlePermissions())
         }
     }
 
-    Scaffold { innerPadding ->
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-                .padding(horizontal = 16.dp),
-            contentPadding = PaddingValues(top = 16.dp, bottom = 32.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            // Header
-            item {
+    Scaffold(
+        topBar = {
+            Column {
                 HeaderSection()
-            }
-
-            // Permissions Card (if not yet granted)
-            if (!hasPermissions) {
-                item {
-                    PermissionRequiredCard {
-                        permissionLauncher.launch(getRequiredBlePermissions())
-                    }
-                }
-            }
-
-            // Bluetooth Status Banner
-            item {
-                BluetoothStatusBar(
-                    isEnabled = uiState.isBluetoothEnabled,
-                    onEnableClick = {
-                        enableBtLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
-                    }
-                )
-            }
-
-            // Fitbit Air Preparation Guide
-            item {
-                FitbitAirPreparationCard()
-            }
-
-            // Scan Control Action
-            item {
-                ScanControlSection(
-                    isScanning = uiState.isScanning,
-                    hasPermissions = hasPermissions,
-                    isBtEnabled = uiState.isBluetoothEnabled,
-                    onStartScan = { viewModel.startScan() },
-                    onStopScan = { viewModel.stopScan() }
-                )
-            }
-
-            // Active Connection / Heart Rate Stream (when connected or in-flight)
-            if (uiState.connectionState !is BleConnectionState.Disconnected) {
-                item {
-                    LiveHeartRateCard(
-                        connectionState = uiState.connectionState,
-                        sample = uiState.latestSample,
-                        packetCount = uiState.totalPacketsReceived,
-                        lastTimestamp = uiState.lastPacketTimestamp,
-                        onDisconnect = { viewModel.disconnect() }
+                TabRow(
+                    selectedTabIndex = selectedTabIndex,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Tab(
+                        selected = selectedTabIndex == 0,
+                        onClick = { selectedTabIndex = 0 },
+                        text = { Text("Live & Record") },
+                        icon = {
+                            if (uiState.recordingState.isRecording) {
+                                BadgedBox(badge = { Badge { Text("REC") } }) {
+                                    Icon(Icons.Default.Favorite, contentDescription = null)
+                                }
+                            } else {
+                                Icon(Icons.Default.Favorite, contentDescription = null)
+                            }
+                        }
                     )
-                }
-
-                // Expandable Developer / Debug Packet Section
-                item {
-                    DeveloperDebugSection(
-                        isExpanded = uiState.isDebugExpanded,
-                        sample = uiState.latestSample,
-                        onToggle = { viewModel.toggleDebug() }
+                    Tab(
+                        selected = selectedTabIndex == 1,
+                        onClick = { selectedTabIndex = 1 },
+                        text = { Text("History (${uiState.sessions.size})") },
+                        icon = { Icon(Icons.Default.History, contentDescription = null) }
                     )
                 }
             }
+        }
+    ) { innerPadding ->
+        if (selectedTabIndex == 0) {
+            // Tab 0: Live & Overnight Recording
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding)
+                    .padding(horizontal = 16.dp),
+                contentPadding = PaddingValues(top = 16.dp, bottom = 32.dp),
+                verticalArrangement = Arrangement.spacedBy(16.dp)
+            ) {
+                // Permissions Card (if not yet granted)
+                if (!hasPermissions) {
+                    item {
+                        PermissionRequiredCard {
+                            permissionLauncher.launch(getRequiredBlePermissions())
+                        }
+                    }
+                }
 
-            // Discovered Devices Header
-            item {
+                // Bluetooth Status Banner
+                item {
+                    BluetoothStatusBar(
+                        isEnabled = uiState.isBluetoothEnabled,
+                        onEnableClick = {
+                            enableBtLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
+                        }
+                    )
+                }
+
+                // Active Connection & Recording Controls
+                if (uiState.connectionState !is BleConnectionState.Disconnected) {
+                    // Overnight Recording Control
+                    item {
+                        OvernightRecordingCard(
+                            recordingState = uiState.recordingState,
+                            onStartRecording = { viewModel.startOvernightRecording() },
+                            onStopRecording = { viewModel.stopOvernightRecording() }
+                        )
+                    }
+
+                    // Live Heart Rate Stream
+                    item {
+                        LiveHeartRateCard(
+                            connectionState = uiState.connectionState,
+                            sample = uiState.latestSample,
+                            packetCount = uiState.totalPacketsReceived,
+                            lastTimestamp = uiState.lastPacketTimestamp,
+                            onDisconnect = { viewModel.disconnect() }
+                        )
+                    }
+
+                    // Expandable Developer / Debug Packet Section
+                    item {
+                        DeveloperDebugSection(
+                            isExpanded = uiState.isDebugExpanded,
+                            sample = uiState.latestSample,
+                            onToggle = { viewModel.toggleDebug() }
+                        )
+                    }
+                } else {
+                    // Fitbit Air Preparation Guide
+                    item {
+                        FitbitAirPreparationCard()
+                    }
+
+                    // Scan Control Action
+                    item {
+                        ScanControlSection(
+                            isScanning = uiState.isScanning,
+                            hasPermissions = hasPermissions,
+                            isBtEnabled = uiState.isBluetoothEnabled,
+                            onStartScan = { viewModel.startScan() },
+                            onStopScan = { viewModel.stopScan() }
+                        )
+                    }
+
+                    // Discovered Devices Header
+                    item {
+                        Text(
+                            text = "Discovered Devices",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    // Discovered Devices List
+                    if (uiState.discoveredDevices.isEmpty()) {
+                        item {
+                            EmptyDevicesCard(isScanning = uiState.isScanning)
+                        }
+                    } else {
+                        items(uiState.discoveredDevices, key = { it.address }) { device ->
+                            DiscoveredDeviceItem(
+                                device = device,
+                                isConnecting = uiState.connectionState is BleConnectionState.Connecting,
+                                onConnectClick = { viewModel.connect(device) }
+                            )
+                        }
+                    }
+                }
+            }
+        } else {
+            // Tab 1: Sleep Session History
+            HistoryTabContent(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding),
+                sessions = uiState.sessions,
+                onSessionClick = { session -> viewModel.selectSession(session) },
+                onDeleteClick = { session -> viewModel.deleteSession(session.sessionId) }
+            )
+        }
+    }
+
+    // Session Detail & Export Dialog
+    uiState.selectedSession?.let { session ->
+        SessionDetailDialog(
+            session = session,
+            records = uiState.selectedSessionRecords,
+            isLoadingRecords = uiState.isLoadingSessionRecords,
+            onDismiss = { viewModel.clearSelectedSession() },
+            onExportCsv = {
+                scope.launch {
+                    val shareIntent = viewModel.exportSession(session)
+                    if (shareIntent != null) {
+                        shareLauncher.launch(Intent.createChooser(shareIntent, "Export Sleep Heart Rate CSV"))
+                    } else {
+                        Toast.makeText(context, "No records to export", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            },
+            onDelete = {
+                viewModel.deleteSession(session.sessionId)
+            }
+        )
+    }
+}
+
+@Composable
+fun HeaderSection() {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp)
+    ) {
+        Text(
+            text = "DozeDial",
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.ExtraBold,
+            color = MaterialTheme.colorScheme.primary
+        )
+        Text(
+            text = "Overnight Sleep Signal Telemetry & Data Collection",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+@Composable
+fun OvernightRecordingCard(
+    recordingState: HeartRateCollectionService.RecordingState,
+    onStartRecording: () -> Unit,
+    onStopRecording: () -> Unit
+) {
+    if (recordingState.isRecording) {
+        Card(
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.errorContainer
+            ),
+            elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(10.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.error)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "RECORDING ACTIVE (OVERNIGHT)",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                    }
+
+                    val hours = recordingState.elapsedSeconds / 3600
+                    val minutes = (recordingState.elapsedSeconds % 3600) / 60
+                    val seconds = recordingState.elapsedSeconds % 60
+                    Text(
+                        text = "%02d:%02d:%02d".format(hours, minutes, seconds),
+                        style = MaterialTheme.typography.titleLarge,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "Packets written to DB:",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                    Text(
+                        text = "${recordingState.sampleCount} samples",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onErrorContainer
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
                 Text(
-                    text = "Discovered Devices",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
+                    text = "Foreground Service & Partial WakeLock active. You can safely lock your screen overnight.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.8f)
                 )
-            }
 
-            // Discovered Devices List
-            if (uiState.discoveredDevices.isEmpty()) {
-                item {
-                    EmptyDevicesCard(isScanning = uiState.isScanning)
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Button(
+                    onClick = onStopRecording,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.Stop, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Stop & Save Recording", fontWeight = FontWeight.Bold)
                 }
-            } else {
-                items(uiState.discoveredDevices, key = { it.address }) { device ->
-                    DiscoveredDeviceItem(
-                        device = device,
-                        isConnecting = uiState.connectionState is BleConnectionState.Connecting,
-                        onConnectClick = { viewModel.connect(device) }
+            }
+        }
+    } else {
+        Card(
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.primaryContainer
+            ),
+            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Nightlight,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary
                     )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Overnight Data Collection",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                }
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = "Record uninterrupted 1 Hz heart rate to local SQLite for sleep signal feasibility analysis. Runs reliably with screen off.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                Button(
+                    onClick = onStartRecording,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.PlayArrow, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Start Overnight Recording", fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -253,19 +510,368 @@ fun MainScreen(viewModel: MainViewModel) {
 }
 
 @Composable
-fun HeaderSection() {
-    Column {
-        Text(
-            text = "DozeDial — Fitbit Air BLE Test",
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.primary
+fun HistoryTabContent(
+    modifier: Modifier = Modifier,
+    sessions: List<SleepSessionEntity>,
+    onSessionClick: (SleepSessionEntity) -> Unit,
+    onDeleteClick: (SleepSessionEntity) -> Unit
+) {
+    if (sessions.isEmpty()) {
+        Box(
+            modifier = modifier.padding(24.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Card(
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                )
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Nightlight,
+                        contentDescription = null,
+                        modifier = Modifier.size(48.dp),
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text(
+                        text = "No sleep recordings yet",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Connect your Fitbit Air on the 'Live & Record' tab and tap 'Start Overnight Recording' to capture your first session.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+    } else {
+        LazyColumn(
+            modifier = modifier.padding(horizontal = 16.dp),
+            contentPadding = PaddingValues(top = 16.dp, bottom = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            items(sessions, key = { it.sessionId }) { session ->
+                SessionHistoryItem(
+                    session = session,
+                    onClick = { onSessionClick(session) },
+                    onDelete = { onDeleteClick(session) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun SessionHistoryItem(
+    session: SleepSessionEntity,
+    onClick: () -> Unit,
+    onDelete: () -> Unit
+) {
+    var showDeleteConfirm by remember { mutableStateOf(false) }
+
+    val dateFormatter = remember {
+        DateTimeFormatter.ofPattern("MMM dd, yyyy • HH:mm").withZone(ZoneId.systemDefault())
+    }
+    val startDateStr = remember(session.startTime) {
+        dateFormatter.format(Instant.ofEpochMilli(session.startTime))
+    }
+
+    val durationStr = remember(session.startTime, session.endTime) {
+        val end = session.endTime ?: session.startTime
+        val elapsedSec = (end - session.startTime) / 1000L
+        val hours = elapsedSec / 3600
+        val mins = (elapsedSec % 3600) / 60
+        val secs = elapsedSec % 60
+        if (hours > 0) "%dh %02dm %02ds".format(hours, mins, secs) else "%02dm %02ds".format(mins, secs)
+    }
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onClick() },
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column {
+                    Text(
+                        text = "Session #${session.sessionId}",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = startDateStr,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                IconButton(onClick = { showDeleteConfirm = true }) {
+                    Icon(
+                        imageVector = Icons.Default.Delete,
+                        contentDescription = "Delete Session",
+                        tint = MaterialTheme.colorScheme.error.copy(alpha = 0.7f)
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Metrics Row
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column {
+                    Text("Duration", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                    Text(durationStr, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                }
+                Column {
+                    Text("Samples", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                    Text("${session.totalSamples}", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                }
+                Column {
+                    Text("Avg BPM", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                    Text(
+                        text = session.avgBpm?.let { "${it.roundToInt()} bpm" } ?: "--",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+                Column {
+                    Text("Range", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                    Text(
+                        text = if (session.minBpm != null && session.maxBpm != null) "${session.minBpm}–${session.maxBpm}" else "--",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                }
+            }
+        }
+    }
+
+    if (showDeleteConfirm) {
+        AlertDialog(
+            onDismissRequest = { showDeleteConfirm = false },
+            title = { Text("Delete Session #${session.sessionId}?") },
+            text = { Text("This will permanently remove this session and all its recorded heart rate packets.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showDeleteConfirm = false
+                        onDelete()
+                    }
+                ) {
+                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteConfirm = false }) {
+                    Text("Cancel")
+                }
+            }
         )
-        Text(
-            text = "Bluetooth Heart Rate Profile (0x180D) Verification",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+    }
+}
+
+@Composable
+fun SessionDetailDialog(
+    session: SleepSessionEntity,
+    records: List<HeartRateRecordEntity>,
+    isLoadingRecords: Boolean,
+    onDismiss: () -> Unit,
+    onExportCsv: () -> Unit,
+    onDelete: () -> Unit
+) {
+    val dateFormatter = remember {
+        DateTimeFormatter.ofPattern("MMM dd, yyyy • HH:mm:ss").withZone(ZoneId.systemDefault())
+    }
+    val startStr = remember(session.startTime) {
+        dateFormatter.format(Instant.ofEpochMilli(session.startTime))
+    }
+    val endStr = remember(session.endTime) {
+        session.endTime?.let { dateFormatter.format(Instant.ofEpochMilli(it)) } ?: "In Progress"
+    }
+
+    val elapsedSec = remember(session.startTime, session.endTime) {
+        val end = session.endTime ?: session.startTime
+        (end - session.startTime) / 1000L
+    }
+    val durationStr = remember(elapsedSec) {
+        val hours = elapsedSec / 3600
+        val mins = (elapsedSec % 3600) / 60
+        val secs = elapsedSec % 60
+        if (hours > 0) "%dh %02dm %02ds".format(hours, mins, secs) else "%02dm %02ds".format(mins, secs)
+    }
+
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Surface(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp),
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.surface
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(20.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                // Header
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text(
+                            text = "Session #${session.sessionId}",
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "Device: ${session.deviceName ?: session.deviceAddress}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    OutlinedButton(onClick = onDismiss) {
+                        Text("Close")
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Text(
+                    text = "Start: $startStr\nEnd:   $endStr\nDuration: $durationStr",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
+
+                // Stats Cards
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    StatCard(
+                        modifier = Modifier.weight(1f),
+                        title = "Avg BPM",
+                        value = session.avgBpm?.let { "${it.roundToInt()}" } ?: "--"
+                    )
+                    StatCard(
+                        modifier = Modifier.weight(1f),
+                        title = "Min BPM",
+                        value = session.minBpm?.toString() ?: "--"
+                    )
+                    StatCard(
+                        modifier = Modifier.weight(1f),
+                        title = "Max BPM",
+                        value = session.maxBpm?.toString() ?: "--"
+                    )
+                    StatCard(
+                        modifier = Modifier.weight(1f),
+                        title = "Packets",
+                        value = session.totalSamples.toString()
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Text(
+                    text = "Heart Rate Over Time (BPM)",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                if (isLoadingRecords) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(180.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator()
+                    }
+                } else {
+                    HeartRateChart(
+                        records = records,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(24.dp))
+
+                // Action Buttons
+                Button(
+                    onClick = onExportCsv,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.Share, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Export CSV for Analysis", fontWeight = FontWeight.Bold)
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                OutlinedButton(
+                    onClick = {
+                        onDelete()
+                        onDismiss()
+                    },
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.Delete, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Delete Session")
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun StatCard(
+    modifier: Modifier = Modifier,
+    title: String,
+    value: String
+) {
+    Card(
+        modifier = modifier,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+    ) {
+        Column(
+            modifier = Modifier.padding(8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(title, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+            Spacer(modifier = Modifier.height(2.dp))
+            Text(value, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+        }
     }
 }
 
@@ -293,7 +899,7 @@ fun PermissionRequiredCard(onRequestClick: () -> Unit) {
             }
             Spacer(modifier = Modifier.height(6.dp))
             Text(
-                text = "DozeDial needs Bluetooth scanning and connection permissions to discover and receive heart rate data from your Fitbit Air.",
+                text = "DozeDial requires Bluetooth scanning/connection and notification permissions to stream and record heart rate data continuously overnight.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onErrorContainer
             )
@@ -528,7 +1134,7 @@ fun LiveHeartRateCard(
     connectionState: BleConnectionState,
     sample: HeartRateSample?,
     packetCount: Int,
-    lastTimestamp: java.time.Instant?,
+    lastTimestamp: Instant?,
     onDisconnect: () -> Unit
 ) {
     val timeFormatter = remember {
@@ -660,7 +1266,7 @@ fun LiveHeartRateCard(
                     }
                 } else {
                     Text(
-                        text = if (sample == null) "Waiting for packets…" else "None in current packet",
+                        text = if (sample == null) "Waiting for packets…" else "None in current packet (Normal for Fitbit Air)",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
