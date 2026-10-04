@@ -11,15 +11,17 @@ import androidx.room.RoomDatabase
 @Database(
     entities = [
         SleepSessionEntity::class,
-        HeartRateRecordEntity::class
+        HeartRateRecordEntity::class,
+        com.dozedial.data.baseline.UserSleepBaselineEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class DozeDialDatabase : RoomDatabase() {
 
     abstract fun sleepSessionDao(): SleepSessionDao
     abstract fun heartRateRecordDao(): HeartRateRecordDao
+    abstract fun userSleepBaselineDao(): com.dozedial.data.baseline.UserSleepBaselineDao
 
     companion object {
         @Volatile

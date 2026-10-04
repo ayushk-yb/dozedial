@@ -34,13 +34,18 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
+import com.dozedial.alarm.AlarmPreferences
+import com.dozedial.alarm.SmartAlarmManager
+import com.dozedial.data.baseline.AdaptiveBaselineEngine
+import com.dozedial.data.baseline.UserSleepBaselineEntity
+import com.dozedial.engine.SleepFeatureExtractor
+import com.dozedial.engine.SleepFeatures
+import com.dozedial.engine.SleepStage
+import com.dozedial.engine.SleepStageClassifier
+
 /**
- * Foreground service managing continuous, overnight BLE heart rate data collection.
- *
- * Runs with [ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE] and holds a partial
- * wake lock to ensure uninterrupted recording across Android Doze and screen-off states.
- * Writes samples to SQLite in buffered batches every 5 seconds or 50 samples to maximize
- * battery efficiency.
+ * Foreground service managing continuous, overnight BLE heart rate data collection,
+ * real-time autonomic sleep stage estimation, and smart alarm trigger evaluation.
  */
 class HeartRateCollectionService : Service() {
 
@@ -52,7 +57,9 @@ class HeartRateCollectionService : Service() {
         val currentBpm: Int? = null,
         val sampleCount: Int = 0,
         val startTimeMs: Long = 0L,
-        val elapsedSeconds: Long = 0L
+        val elapsedSeconds: Long = 0L,
+        val currentStage: SleepStage = SleepStage.WAKE,
+        val currentFeatures: SleepFeatures = SleepFeatures()
     )
 
     companion object {
@@ -92,6 +99,10 @@ class HeartRateCollectionService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var currentSessionId: Long? = null
     private var sessionStartTimeMs: Long = 0L
+
+    private val featureExtractor = SleepFeatureExtractor(windowSize = 300)
+    private var cachedBaseline: UserSleepBaselineEntity = UserSleepBaselineEntity.default()
+    private var alarmTriggeredThisSession = false
 
     private val buffer = mutableListOf<HeartRateRecordEntity>()
     private val bufferMutex = Mutex()
@@ -134,11 +145,14 @@ class HeartRateCollectionService : Service() {
         sessionStartTimeMs = System.currentTimeMillis()
         totalSampleCounter = 0
         latestBpm = null
+        featureExtractor.reset()
+        alarmTriggeredThisSession = false
 
         val initialNotification = buildNotification(
             bpm = null,
             elapsedSeconds = 0L,
-            sampleCount = 0
+            sampleCount = 0,
+            stage = SleepStage.WAKE
         )
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -153,6 +167,13 @@ class HeartRateCollectionService : Service() {
 
         serviceScope.launch {
             val database = DozeDialApplication.instance.database
+            val baseline = try {
+                database.userSleepBaselineDao().getBaselineSync()
+            } catch (e: Exception) {
+                null
+            }
+            cachedBaseline = baseline ?: UserSleepBaselineEntity.default()
+
             val session = SleepSessionEntity(
                 startTime = sessionStartTimeMs,
                 deviceAddress = deviceAddress,
@@ -168,7 +189,9 @@ class HeartRateCollectionService : Service() {
                 deviceName = deviceName,
                 startTimeMs = sessionStartTimeMs,
                 sampleCount = 0,
-                elapsedSeconds = 0L
+                elapsedSeconds = 0L,
+                currentStage = SleepStage.WAKE,
+                currentFeatures = SleepFeatures()
             )
 
             startSampleCollection(newSessionId)
@@ -189,6 +212,43 @@ class HeartRateCollectionService : Service() {
                     rawBytesHex = sample.rawBytesHex
                 )
 
+                // 1. Update rolling feature buffer & classify current sleep stage
+                featureExtractor.addSample(sample.bpm)
+                val features = featureExtractor.computeFeatures(cachedBaseline.rollingRhr)
+                val stage = SleepStageClassifier.classify(features, cachedBaseline)
+
+                // 2. Evaluate Smart-Alarm trigger if active
+                if (!alarmTriggeredThisSession) {
+                    val alarmConfig = AlarmPreferences(this@HeartRateCollectionService).loadConfig()
+                    if (alarmConfig.isEnabled) {
+                        val now = System.currentTimeMillis()
+                        val targetMs = alarmConfig.getNextTargetEpochMs(now)
+                        val decision = SmartAlarmManager.evaluateTrigger(
+                            nowMs = now,
+                            targetMs = targetMs,
+                            windowMinutes = alarmConfig.smartWindowMinutes,
+                            currentStage = stage
+                        )
+                        if (decision == SmartAlarmManager.TriggerDecision.SMART_LIGHT_SLEEP) {
+                            alarmTriggeredThisSession = true
+                            Log.i(TAG, "Smart alarm triggered in optimal waking stage: $stage")
+                            SmartAlarmManager.triggerAlarmNow(
+                                context = this@HeartRateCollectionService,
+                                reason = "Optimal Light Sleep Window Detected",
+                                stage = stage
+                            )
+                        } else if (decision == SmartAlarmManager.TriggerDecision.HARD_CUTOFF) {
+                            alarmTriggeredThisSession = true
+                            Log.i(TAG, "Smart alarm triggered at target hard cutoff")
+                            SmartAlarmManager.triggerAlarmNow(
+                                context = this@HeartRateCollectionService,
+                                reason = "Target Alarm Cutoff Reached",
+                                stage = stage
+                            )
+                        }
+                    }
+                }
+
                 var itemsToFlush: List<HeartRateRecordEntity>? = null
                 bufferMutex.withLock {
                     buffer.add(record)
@@ -203,7 +263,9 @@ class HeartRateCollectionService : Service() {
                 _recordingState.update { current ->
                     current.copy(
                         currentBpm = sample.bpm,
-                        sampleCount = totalSampleCounter
+                        sampleCount = totalSampleCounter,
+                        currentStage = stage,
+                        currentFeatures = features
                     )
                 }
 
@@ -288,6 +350,16 @@ class HeartRateCollectionService : Service() {
                         )
                         db.sleepSessionDao().update(finalizedSession)
                         Log.i(TAG, "Finalized sleep session $sessionId: count=$recordCount, avg=$avgBpm, min=$minBpm, max=$maxBpm")
+
+                        // Update adaptive baseline from this finalized night
+                        val records = db.heartRateRecordDao().getRecordsForSessionSync(sessionId)
+                        val analysis = AdaptiveBaselineEngine.analyzeNight(records)
+                        if (analysis != null) {
+                            val currentBase = db.userSleepBaselineDao().getBaselineSync()
+                            val updatedBase = AdaptiveBaselineEngine.updateBaselineWithNight(currentBase, analysis)
+                            db.userSleepBaselineDao().insertOrUpdate(updatedBase)
+                            Log.i(TAG, "Updated adaptive baseline: nights=${updatedBase.nightsAnalyzed}, rhr=${updatedBase.rollingRhr}")
+                        }
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Error finalizing session in DB", e)
@@ -343,7 +415,12 @@ class HeartRateCollectionService : Service() {
         }
     }
 
-    private fun buildNotification(bpm: Int?, elapsedSeconds: Long, sampleCount: Int): Notification {
+    private fun buildNotification(
+        bpm: Int?,
+        elapsedSeconds: Long,
+        sampleCount: Int,
+        stage: SleepStage = _recordingState.value.currentStage
+    ): Notification {
         val hours = elapsedSeconds / 3600
         val minutes = (elapsedSeconds % 3600) / 60
         val seconds = elapsedSeconds % 60
@@ -354,7 +431,7 @@ class HeartRateCollectionService : Service() {
         }
 
         val bpmText = if (bpm != null && bpm > 0) "$bpm BPM" else "-- BPM"
-        val contentText = "Live HR: $bpmText • $durationStr • $sampleCount samples"
+        val contentText = "Live HR: $bpmText • ${stage.shortName} • $durationStr • $sampleCount samples"
 
         val openAppIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP

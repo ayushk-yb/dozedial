@@ -1,6 +1,7 @@
 package com.dozedial.ui
 
 import android.Manifest
+import android.app.TimePickerDialog
 import android.bluetooth.BluetoothAdapter
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -13,11 +14,18 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -38,21 +46,27 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Alarm
+import androidx.compose.material.icons.filled.Bedtime
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.BluetoothDisabled
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.GraphicEq
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
-import androidx.compose.material.icons.filled.Nightlight
+import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Speed
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Vibration
+import androidx.compose.material.icons.filled.WbSunny
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
@@ -62,7 +76,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DividerDefaults
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -70,8 +83,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
+import androidx.compose.material3.TabRowDefaults
+import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -86,6 +103,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -96,13 +114,22 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.dozedial.alarm.AlarmConfig
 import com.dozedial.ble.BleConnectionState
 import com.dozedial.ble.BleDevice
 import com.dozedial.ble.HeartRateParser
-import com.dozedial.data.HeartRateSample
+import com.dozedial.data.baseline.UserSleepBaselineEntity
 import com.dozedial.data.db.HeartRateRecordEntity
 import com.dozedial.data.db.SleepSessionEntity
+import com.dozedial.engine.SleepStage
 import com.dozedial.service.HeartRateCollectionService
+import com.dozedial.ui.components.AutonomicMetricsGrid
+import com.dozedial.ui.components.HypnogramChart
+import com.dozedial.ui.components.LiveHeartRateGauge
+import com.dozedial.ui.components.LiveSleepStageCard
+import com.dozedial.ui.components.LiveStabilitySparkline
+import com.dozedial.ui.components.SmartAlarmClockDial
+import com.dozedial.ui.theme.DozeDialColors
 import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.ZoneId
@@ -116,7 +143,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme {
+            MaterialTheme(colorScheme = DozeDialColors.DarkColorScheme) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
@@ -133,9 +160,6 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-/**
- * Returns the list of runtime permissions required for BLE and foreground notification operations.
- */
 fun getRequiredBlePermissions(): Array<String> {
     val list = mutableListOf<String>()
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -190,155 +214,111 @@ fun MainScreen(viewModel: MainViewModel) {
 
     Scaffold(
         topBar = {
-            Column {
-                HeaderSection()
+            Column(modifier = Modifier.background(DozeDialColors.MidnightBlack)) {
+                HeaderSection(connectionState = uiState.connectionState)
                 TabRow(
                     selectedTabIndex = selectedTabIndex,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    containerColor = DozeDialColors.MidnightBlack,
+                    contentColor = DozeDialColors.CelestialCyan,
+                    indicator = { tabPositions ->
+                        if (selectedTabIndex < tabPositions.size) {
+                            TabRowDefaults.SecondaryIndicator(
+                                Modifier.tabIndicatorOffset(tabPositions[selectedTabIndex]),
+                                color = DozeDialColors.NeonIndigo
+                            )
+                        }
+                    }
                 ) {
                     Tab(
                         selected = selectedTabIndex == 0,
                         onClick = { selectedTabIndex = 0 },
-                        text = { Text("Live & Record") },
+                        text = { Text("Sleep & Alarm", fontWeight = FontWeight.Bold, fontSize = 12.sp) },
                         icon = {
                             if (uiState.recordingState.isRecording) {
-                                BadgedBox(badge = { Badge { Text("REC") } }) {
-                                    Icon(Icons.Default.Favorite, contentDescription = null)
+                                BadgedBox(badge = { Badge(containerColor = DozeDialColors.SunriseCoral) { Text("REC") } }) {
+                                    Icon(Icons.Default.Alarm, contentDescription = null)
                                 }
                             } else {
-                                Icon(Icons.Default.Favorite, contentDescription = null)
+                                Icon(Icons.Default.Alarm, contentDescription = null)
                             }
-                        }
+                        },
+                        selectedContentColor = DozeDialColors.NeonIndigo,
+                        unselectedContentColor = DozeDialColors.TextTertiary
                     )
                     Tab(
                         selected = selectedTabIndex == 1,
                         onClick = { selectedTabIndex = 1 },
-                        text = { Text("History (${uiState.sessions.size})") },
-                        icon = { Icon(Icons.Default.History, contentDescription = null) }
+                        text = { Text("Live Staging", fontWeight = FontWeight.Bold, fontSize = 12.sp) },
+                        icon = { Icon(Icons.Default.Favorite, contentDescription = null) },
+                        selectedContentColor = DozeDialColors.CelestialCyan,
+                        unselectedContentColor = DozeDialColors.TextTertiary
+                    )
+                    Tab(
+                        selected = selectedTabIndex == 2,
+                        onClick = { selectedTabIndex = 2 },
+                        text = { Text("Analytics (${uiState.sessions.size})", fontWeight = FontWeight.Bold, fontSize = 12.sp) },
+                        icon = { Icon(Icons.Default.History, contentDescription = null) },
+                        selectedContentColor = DozeDialColors.EmeraldSleep,
+                        unselectedContentColor = DozeDialColors.TextTertiary
                     )
                 }
             }
         }
     ) { innerPadding ->
-        if (selectedTabIndex == 0) {
-            // Tab 0: Live & Overnight Recording
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding)
-                    .padding(horizontal = 16.dp),
-                contentPadding = PaddingValues(top = 16.dp, bottom = 32.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                // Permissions Card (if not yet granted)
-                if (!hasPermissions) {
-                    item {
-                        PermissionRequiredCard {
-                            permissionLauncher.launch(getRequiredBlePermissions())
-                        }
-                    }
-                }
-
-                // Bluetooth Status Banner
-                item {
-                    BluetoothStatusBar(
-                        isEnabled = uiState.isBluetoothEnabled,
-                        onEnableClick = {
-                            enableBtLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
-                        }
-                    )
-                }
-
-                // Active Connection & Recording Controls
-                if (uiState.connectionState !is BleConnectionState.Disconnected) {
-                    // Overnight Recording Control
-                    item {
-                        OvernightRecordingCard(
-                            recordingState = uiState.recordingState,
-                            onStartRecording = { viewModel.startOvernightRecording() },
-                            onStopRecording = { viewModel.stopOvernightRecording() }
-                        )
-                    }
-
-                    // Live Heart Rate Stream
-                    item {
-                        LiveHeartRateCard(
-                            connectionState = uiState.connectionState,
-                            sample = uiState.latestSample,
-                            packetCount = uiState.totalPacketsReceived,
-                            lastTimestamp = uiState.lastPacketTimestamp,
-                            onDisconnect = { viewModel.disconnect() }
-                        )
-                    }
-
-                    // Expandable Developer / Debug Packet Section
-                    item {
-                        DeveloperDebugSection(
-                            isExpanded = uiState.isDebugExpanded,
-                            sample = uiState.latestSample,
-                            onToggle = { viewModel.toggleDebug() }
-                        )
-                    }
-                } else {
-                    // Fitbit Air Preparation Guide
-                    item {
-                        FitbitAirPreparationCard()
-                    }
-
-                    // Scan Control Action
-                    item {
-                        ScanControlSection(
-                            isScanning = uiState.isScanning,
-                            hasPermissions = hasPermissions,
-                            isBtEnabled = uiState.isBluetoothEnabled,
-                            onStartScan = { viewModel.startScan() },
-                            onStopScan = { viewModel.stopScan() }
-                        )
-                    }
-
-                    // Discovered Devices Header
-                    item {
-                        Text(
-                            text = "Discovered Devices",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-
-                    // Discovered Devices List
-                    if (uiState.discoveredDevices.isEmpty()) {
-                        item {
-                            EmptyDevicesCard(isScanning = uiState.isScanning)
-                        }
-                    } else {
-                        items(uiState.discoveredDevices, key = { it.address }) { device ->
-                            DiscoveredDeviceItem(
-                                device = device,
-                                isConnecting = uiState.connectionState is BleConnectionState.Connecting,
-                                onConnectClick = { viewModel.connect(device) }
-                            )
-                        }
-                    }
-                }
+        when (selectedTabIndex) {
+            0 -> {
+                // Tab 0: Sleep & Alarm
+                SleepAndAlarmTab(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(innerPadding),
+                    uiState = uiState,
+                    onOneTapSleep = { viewModel.oneTapSleep() },
+                    onStopRecording = { viewModel.stopOvernightRecording() },
+                    onToggleAlarm = { viewModel.toggleAlarmEnabled() },
+                    onUpdateConfig = { viewModel.updateAlarmConfig(it) },
+                    onTestPreview = { viewModel.testAlarmPreview() }
+                )
             }
-        } else {
-            // Tab 1: Sleep Session History
-            HistoryTabContent(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding),
-                sessions = uiState.sessions,
-                onSessionClick = { session -> viewModel.selectSession(session) },
-                onDeleteClick = { session -> viewModel.deleteSession(session.sessionId) }
-            )
+            1 -> {
+                // Tab 1: Live Telemetry & Staging
+                LiveTelemetryTab(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(innerPadding),
+                    uiState = uiState,
+                    hasPermissions = hasPermissions,
+                    onRequestPermissions = { permissionLauncher.launch(getRequiredBlePermissions()) },
+                    onEnableBt = { enableBtLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE)) },
+                    onStartScan = { viewModel.startScan() },
+                    onStopScan = { viewModel.stopScan() },
+                    onConnect = { viewModel.connect(it) },
+                    onDisconnect = { viewModel.disconnect() },
+                    onToggleDebug = { viewModel.toggleDebug() }
+                )
+            }
+            2 -> {
+                // Tab 2: Analytics & Hypnogram History
+                AnalyticsHistoryTab(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(innerPadding),
+                    sessions = uiState.sessions,
+                    baseline = uiState.baseline,
+                    onSessionClick = { session -> viewModel.selectSession(session) },
+                    onDeleteClick = { session -> viewModel.deleteSession(session.sessionId) }
+                )
+            }
         }
     }
 
-    // Session Detail & Export Dialog
+    // Session Detail & Hypnogram Dialog
     uiState.selectedSession?.let { session ->
         SessionDetailDialog(
             session = session,
             records = uiState.selectedSessionRecords,
+            baseline = uiState.baseline,
             isLoadingRecords = uiState.isLoadingSessionRecords,
             onDismiss = { viewModel.clearSelectedSession() },
             onExportCsv = {
@@ -359,40 +339,378 @@ fun MainScreen(viewModel: MainViewModel) {
 }
 
 @Composable
-fun HeaderSection() {
-    Column(
+fun HeaderSection(connectionState: BleConnectionState) {
+    Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 12.dp)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        Text(
-            text = "DozeDial",
-            style = MaterialTheme.typography.headlineMedium,
-            fontWeight = FontWeight.ExtraBold,
-            color = MaterialTheme.colorScheme.primary
-        )
-        Text(
-            text = "Overnight Sleep Signal Telemetry & Data Collection",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        Column {
+            Text(
+                text = "DozeDial",
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.ExtraBold,
+                color = DozeDialColors.NeonIndigo,
+                letterSpacing = 0.5.sp
+            )
+            Text(
+                text = "Autonomous Sleep Staging & Smart-Alarm",
+                style = MaterialTheme.typography.bodySmall,
+                color = DozeDialColors.TextSecondary
+            )
+        }
+
+        // Connection Status Badge with breathing dot
+        DeviceConnectionStatusBadge(connectionState)
     }
 }
 
 @Composable
-fun OvernightRecordingCard(
+fun DeviceConnectionStatusBadge(connectionState: BleConnectionState) {
+    val isConnected = connectionState is BleConnectionState.Connected
+    val isConnecting = connectionState is BleConnectionState.Connecting ||
+        connectionState is BleConnectionState.DiscoveringServices ||
+        connectionState is BleConnectionState.SubscribingToNotifications
+
+    val dotColor = when {
+        isConnected -> DozeDialColors.EmeraldSleep
+        isConnecting -> DozeDialColors.DawnGold
+        else -> Color(0xFF6B7280)
+    }
+
+    val statusText = when (connectionState) {
+        is BleConnectionState.Connected -> connectionState.deviceName ?: "Fitbit Air"
+        is BleConnectionState.Connecting -> "Connecting…"
+        is BleConnectionState.DiscoveringServices -> "Discovering…"
+        is BleConnectionState.SubscribingToNotifications -> "Subscribing…"
+        else -> "Fitbit Air Off"
+    }
+
+    // Pulse animation
+    val transition = rememberInfiniteTransition(label = "badgePulse")
+    val scale by transition.animateFloat(
+        initialValue = 0.85f,
+        targetValue = 1.25f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1000, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "dotScale"
+    )
+
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = DozeDialColors.CardBackground,
+        border = androidx.compose.foundation.BorderStroke(1.dp, DozeDialColors.CardBorder)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(8.dp)
+                    .scale(if (isConnected || isConnecting) scale else 1f)
+                    .clip(CircleShape)
+                    .background(dotColor)
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Text(
+                text = statusText,
+                style = MaterialTheme.typography.labelSmall,
+                color = DozeDialColors.TextPrimary,
+                fontWeight = FontWeight.Medium
+            )
+        }
+    }
+}
+
+@Composable
+fun SleepAndAlarmTab(
+    modifier: Modifier = Modifier,
+    uiState: MainUiState,
+    onOneTapSleep: () -> Unit,
+    onStopRecording: () -> Unit,
+    onToggleAlarm: () -> Unit,
+    onUpdateConfig: (AlarmConfig) -> Unit,
+    onTestPreview: () -> Unit
+) {
+    val context = LocalContext.current
+    val config = uiState.alarmConfig
+    val recordingState = uiState.recordingState
+
+    LazyColumn(
+        modifier = modifier
+            .padding(horizontal = 16.dp),
+        contentPadding = PaddingValues(top = 16.dp, bottom = 36.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        // 1. Overnight Recording Hero Card
+        item {
+            OvernightRecordingHeroCard(
+                recordingState = recordingState,
+                onOneTapSleep = onOneTapSleep,
+                onStopRecording = onStopRecording
+            )
+        }
+
+        // 2. Circular Smart Alarm Clock Dial
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = DozeDialColors.CardBackground),
+                shape = RoundedCornerShape(20.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, DozeDialColors.CardBorder),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.WbSunny,
+                                contentDescription = null,
+                                tint = DozeDialColors.CelestialCyan,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "Smart Wake Window",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                        }
+
+                        Switch(
+                            checked = config.isEnabled,
+                            onCheckedChange = { onToggleAlarm() },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color.White,
+                                checkedTrackColor = DozeDialColors.NeonIndigo,
+                                uncheckedTrackColor = Color(0xFF334155)
+                            )
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // Circular Arc Dial
+                    SmartAlarmClockDial(
+                        config = config,
+                        modifier = Modifier.padding(vertical = 4.dp)
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    Text(
+                        text = if (config.isEnabled) {
+                            "Window: ${config.formattedWindowRange()}"
+                        } else {
+                            "Smart Alarm is currently off"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (config.isEnabled) DozeDialColors.CelestialCyan else DozeDialColors.TextTertiary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Time Adjust Controls
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceEvenly
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                val tMin = (config.targetMinute - 15 + 60) % 60
+                                val tHour = if (config.targetMinute < 15) (config.targetHour - 1 + 24) % 24 else config.targetHour
+                                onUpdateConfig(config.copy(targetHour = tHour, targetMinute = tMin))
+                            }
+                        ) {
+                            Text("-15m")
+                        }
+
+                        Button(
+                            onClick = {
+                                TimePickerDialog(
+                                    context,
+                                    { _, hour, minute ->
+                                        onUpdateConfig(config.copy(targetHour = hour, targetMinute = minute))
+                                    },
+                                    config.targetHour,
+                                    config.targetMinute,
+                                    false
+                                ).show()
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = DozeDialColors.NeonIndigo)
+                        ) {
+                            Icon(Icons.Default.Schedule, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Set Time")
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                val tMin = (config.targetMinute + 15) % 60
+                                val tHour = if (config.targetMinute + 15 >= 60) (config.targetHour + 1) % 24 else config.targetHour
+                                onUpdateConfig(config.copy(targetHour = tHour, targetMinute = tMin))
+                            }
+                        ) {
+                            Text("+15m")
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Smart Window & Wake Options Card
+        item {
+            Card(
+                colors = CardDefaults.cardColors(containerColor = DozeDialColors.CardBackground),
+                shape = RoundedCornerShape(20.dp),
+                border = androidx.compose.foundation.BorderStroke(1.dp, DozeDialColors.CardBorder),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(18.dp)) {
+                    Text(
+                        text = "Smart Window Duration",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                    Text(
+                        text = "Wakes you gently if you shift into Light Sleep within this window",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = DozeDialColors.TextSecondary
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    // Window duration options
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        listOf(10, 15, 20, 30).forEach { mins ->
+                            val isSelected = config.smartWindowMinutes == mins
+                            Button(
+                                onClick = { onUpdateConfig(config.copy(smartWindowMinutes = mins)) },
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (isSelected) DozeDialColors.NeonIndigo else Color(0xFF1E293B),
+                                    contentColor = if (isSelected) Color.White else DozeDialColors.TextSecondary
+                                ),
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(vertical = 4.dp)
+                            ) {
+                                Text("${mins}m", fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Text(
+                        text = "Volume Crescendo Ramp",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                    Text(
+                        text = "Smoothly ramps alarm volume from 10% to 100%",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = DozeDialColors.TextSecondary
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        listOf(15, 30, 45, 60).forEach { secs ->
+                            val isSelected = config.crescendoSeconds == secs
+                            Button(
+                                onClick = { onUpdateConfig(config.copy(crescendoSeconds = secs)) },
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (isSelected) DozeDialColors.CelestialCyan else Color(0xFF1E293B),
+                                    contentColor = if (isSelected) Color(0xFF0F172A) else DozeDialColors.TextSecondary
+                                ),
+                                shape = RoundedCornerShape(10.dp),
+                                contentPadding = PaddingValues(vertical = 4.dp)
+                            ) {
+                                Text("${secs}s", fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    // Vibration toggle
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Vibration, contentDescription = null, tint = DozeDialColors.TextSecondary)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Gentle Pulse Vibration", style = MaterialTheme.typography.bodyMedium, color = Color.White)
+                        }
+
+                        Switch(
+                            checked = config.vibrate,
+                            onCheckedChange = { onUpdateConfig(config.copy(vibrate = it)) },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color.White,
+                                checkedTrackColor = DozeDialColors.CelestialCyan
+                            )
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    // Dry-run preview alarm button
+                    OutlinedButton(
+                        onClick = onTestPreview,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Default.NotificationsActive, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Test Sunrise & Audio Crescendo")
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun OvernightRecordingHeroCard(
     recordingState: HeartRateCollectionService.RecordingState,
-    onStartRecording: () -> Unit,
+    onOneTapSleep: () -> Unit,
     onStopRecording: () -> Unit
 ) {
     if (recordingState.isRecording) {
         Card(
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.errorContainer
-            ),
-            elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF450A0A)),
+            shape = RoundedCornerShape(20.dp),
+            border = androidx.compose.foundation.BorderStroke(1.dp, DozeDialColors.SunriseCoral.copy(alpha = 0.5f)),
+            modifier = Modifier.fillMaxWidth()
         ) {
-            Column(modifier = Modifier.padding(16.dp)) {
+            Column(modifier = Modifier.padding(18.dp)) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
@@ -403,14 +721,15 @@ fun OvernightRecordingCard(
                             modifier = Modifier
                                 .size(10.dp)
                                 .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.error)
+                                .background(DozeDialColors.SunriseCoral)
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "RECORDING ACTIVE (OVERNIGHT)",
-                            style = MaterialTheme.typography.labelMedium,
+                            text = "OVERNIGHT SLEEP ACTIVE",
+                            style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onErrorContainer
+                            color = DozeDialColors.SunriseCoral,
+                            letterSpacing = 1.sp
                         )
                     }
 
@@ -422,87 +741,104 @@ fun OvernightRecordingCard(
                         style = MaterialTheme.typography.titleLarge,
                         fontFamily = FontFamily.Monospace,
                         fontWeight = FontWeight.ExtraBold,
-                        color = MaterialTheme.colorScheme.onErrorContainer
+                        color = Color.White
                     )
                 }
 
-                Spacer(modifier = Modifier.height(10.dp))
+                Spacer(modifier = Modifier.height(12.dp))
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Text(
-                        text = "Packets written to DB:",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onErrorContainer
-                    )
-                    Text(
-                        text = "${recordingState.sampleCount} samples",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onErrorContainer
-                    )
+                    Column {
+                        Text("Live Stage", style = MaterialTheme.typography.labelSmall, color = DozeDialColors.TextSecondary)
+                        Text(
+                            recordingState.currentStage.displayName,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(recordingState.currentStage.colorHex)
+                        )
+                    }
+                    Column {
+                        Text("Live HR", style = MaterialTheme.typography.labelSmall, color = DozeDialColors.TextSecondary)
+                        Text(
+                            recordingState.currentBpm?.let { "$it BPM" } ?: "--",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    }
+                    Column {
+                        Text("Packets", style = MaterialTheme.typography.labelSmall, color = DozeDialColors.TextSecondary)
+                        Text(
+                            "${recordingState.sampleCount}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    }
                 }
 
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "Foreground Service & Partial WakeLock active. You can safely lock your screen overnight.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onErrorContainer.copy(alpha = 0.8f)
-                )
-
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(14.dp))
 
                 Button(
                     onClick = onStopRecording,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.error
-                    ),
-                    modifier = Modifier.fillMaxWidth()
+                    colors = ButtonDefaults.buttonColors(containerColor = DozeDialColors.SunriseCoral),
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp)
                 ) {
                     Icon(Icons.Default.Stop, contentDescription = null)
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Stop & Save Recording", fontWeight = FontWeight.Bold)
+                    Text("Stop & Finalize Session", fontWeight = FontWeight.Bold)
                 }
             }
         }
     } else {
         Card(
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.primaryContainer
-            ),
-            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+            colors = CardDefaults.cardColors(containerColor = DozeDialColors.CardBackground),
+            shape = RoundedCornerShape(20.dp),
+            border = androidx.compose.foundation.BorderStroke(1.dp, DozeDialColors.CardBorder),
+            modifier = Modifier.fillMaxWidth()
         ) {
-            Column(modifier = Modifier.padding(16.dp)) {
+            Column(modifier = Modifier.padding(20.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
-                        imageVector = Icons.Default.Nightlight,
+                        imageVector = Icons.Default.Bedtime,
                         contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary
+                        tint = DozeDialColors.NeonIndigo,
+                        modifier = Modifier.size(24.dp)
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
+                    Spacer(modifier = Modifier.width(10.dp))
                     Text(
-                        text = "Overnight Data Collection",
+                        text = "One-Tap Sleep",
                         style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer
+                        fontWeight = FontWeight.ExtraBold,
+                        color = Color.White
                     )
                 }
+
                 Spacer(modifier = Modifier.height(6.dp))
+
                 Text(
-                    text = "Record uninterrupted 1 Hz heart rate to local SQLite for sleep signal feasibility analysis. Runs reliably with screen off.",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                    text = "Arm your smart alarm and begin uninterrupted overnight physiological recording with a single gesture.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = DozeDialColors.TextSecondary
                 )
-                Spacer(modifier = Modifier.height(12.dp))
+
+                Spacer(modifier = Modifier.height(16.dp))
+
                 Button(
-                    onClick = onStartRecording,
-                    modifier = Modifier.fillMaxWidth()
+                    onClick = onOneTapSleep,
+                    colors = ButtonDefaults.buttonColors(containerColor = DozeDialColors.NeonIndigo),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(50.dp),
+                    shape = RoundedCornerShape(14.dp)
                 ) {
                     Icon(Icons.Default.PlayArrow, contentDescription = null)
                     Spacer(modifier = Modifier.width(8.dp))
-                    Text("Start Overnight Recording", fontWeight = FontWeight.Bold)
+                    Text("Start Overnight Sleep", fontWeight = FontWeight.Bold, fontSize = 15.sp)
                 }
             }
         }
@@ -510,60 +846,304 @@ fun OvernightRecordingCard(
 }
 
 @Composable
-fun HistoryTabContent(
+fun LiveTelemetryTab(
     modifier: Modifier = Modifier,
-    sessions: List<SleepSessionEntity>,
-    onSessionClick: (SleepSessionEntity) -> Unit,
-    onDeleteClick: (SleepSessionEntity) -> Unit
+    uiState: MainUiState,
+    hasPermissions: Boolean,
+    onRequestPermissions: () -> Unit,
+    onEnableBt: () -> Unit,
+    onStartScan: () -> Unit,
+    onStopScan: () -> Unit,
+    onConnect: (BleDevice) -> Unit,
+    onDisconnect: () -> Unit,
+    onToggleDebug: () -> Unit
 ) {
-    if (sessions.isEmpty()) {
-        Box(
-            modifier = modifier.padding(24.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Card(
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-                )
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(24.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
+    LazyColumn(
+        modifier = modifier.padding(horizontal = 16.dp),
+        contentPadding = PaddingValues(top = 16.dp, bottom = 36.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        if (!hasPermissions) {
+            item {
+                PermissionRequiredCard(onRequestPermissions)
+            }
+        }
+
+        item {
+            BluetoothStatusBar(
+                isEnabled = uiState.isBluetoothEnabled,
+                onEnableClick = onEnableBt
+            )
+        }
+
+        // Live Telemetry Cards
+        item {
+            LiveHeartRateGauge(bpm = uiState.latestSample?.bpm)
+        }
+
+        item {
+            LiveSleepStageCard(stage = uiState.recordingState.currentStage)
+        }
+
+        item {
+            AutonomicMetricsGrid(features = uiState.recordingState.currentFeatures)
+        }
+
+        item {
+            LiveStabilitySparkline(samples = uiState.liveRollingSamples)
+        }
+
+        // Active Connection / Scan Section
+        if (uiState.connectionState is BleConnectionState.Connected) {
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = DozeDialColors.CardBackground),
+                    shape = RoundedCornerShape(16.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, DozeDialColors.CardBorder)
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Nightlight,
-                        contentDescription = null,
-                        modifier = Modifier.size(48.dp),
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Text(
-                        text = "No sleep recordings yet",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "Connect your Fitbit Air on the 'Live & Record' tab and tap 'Start Overnight Recording' to capture your first session.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Column {
+                            Text(
+                                text = "Connected: ${uiState.connectionState.deviceName ?: "Fitbit Air"}",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = DozeDialColors.EmeraldSleep
+                            )
+                            Text(
+                                text = "MAC: ${uiState.connectionState.deviceAddress}",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = DozeDialColors.TextSecondary
+                            )
+                        }
+
+                        OutlinedButton(onClick = onDisconnect) {
+                            Text("Disconnect")
+                        }
+                    }
+                }
+            }
+
+            // Developer Debug
+            item {
+                DeveloperDebugSection(
+                    isExpanded = uiState.isDebugExpanded,
+                    sample = uiState.latestSample,
+                    onToggle = onToggleDebug
+                )
+            }
+        } else {
+            item {
+                FitbitAirPreparationCard()
+            }
+
+            item {
+                ScanControlSection(
+                    isScanning = uiState.isScanning,
+                    hasPermissions = hasPermissions,
+                    isBtEnabled = uiState.isBluetoothEnabled,
+                    onStartScan = onStartScan,
+                    onStopScan = onStopScan
+                )
+            }
+
+            item {
+                Text(
+                    text = "Discovered Devices",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
+                )
+            }
+
+            if (uiState.discoveredDevices.isEmpty()) {
+                item {
+                    EmptyDevicesCard(isScanning = uiState.isScanning)
+                }
+            } else {
+                items(uiState.discoveredDevices, key = { it.address }) { device ->
+                    DiscoveredDeviceItem(
+                        device = device,
+                        isConnecting = uiState.connectionState is BleConnectionState.Connecting,
+                        onConnectClick = { onConnect(device) }
                     )
                 }
             }
         }
-    } else {
-        LazyColumn(
-            modifier = modifier.padding(horizontal = 16.dp),
-            contentPadding = PaddingValues(top = 16.dp, bottom = 32.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
+    }
+}
+
+@Composable
+fun AnalyticsHistoryTab(
+    modifier: Modifier = Modifier,
+    sessions: List<SleepSessionEntity>,
+    baseline: UserSleepBaselineEntity?,
+    onSessionClick: (SleepSessionEntity) -> Unit,
+    onDeleteClick: (SleepSessionEntity) -> Unit
+) {
+    LazyColumn(
+        modifier = modifier.padding(horizontal = 16.dp),
+        contentPadding = PaddingValues(top = 16.dp, bottom = 36.dp),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
+        // 1. Adaptive Baseline Profile Card
+        item {
+            AdaptiveBaselineCard(baseline = baseline)
+        }
+
+        // 2. History Header
+        item {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "Sleep Session History",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
+                )
+                Text(
+                    text = "${sessions.size} recorded",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = DozeDialColors.TextSecondary
+                )
+            }
+        }
+
+        if (sessions.isEmpty()) {
+            item {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = DozeDialColors.CardBackground.copy(alpha = 0.5f)),
+                    shape = RoundedCornerShape(16.dp)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(28.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Bedtime,
+                            contentDescription = null,
+                            modifier = Modifier.size(44.dp),
+                            tint = DozeDialColors.NeonIndigo
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Text(
+                            text = "No sleep recordings yet",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Start overnight recording from the 'Sleep & Alarm' tab to begin building your adaptive profile.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = DozeDialColors.TextSecondary
+                        )
+                    }
+                }
+            }
+        } else {
             items(sessions, key = { it.sessionId }) { session ->
                 SessionHistoryItem(
                     session = session,
                     onClick = { onSessionClick(session) },
                     onDelete = { onDeleteClick(session) }
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun AdaptiveBaselineCard(baseline: UserSleepBaselineEntity?) {
+    val base = baseline ?: UserSleepBaselineEntity.default()
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = DozeDialColors.CardBackground),
+        shape = RoundedCornerShape(18.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, DozeDialColors.CardBorder),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Column(modifier = Modifier.padding(18.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.GraphicEq,
+                        contentDescription = null,
+                        tint = DozeDialColors.NeonIndigo,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Adaptive Autonomic Baseline",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                }
+
+                Surface(
+                    shape = RoundedCornerShape(8.dp),
+                    color = DozeDialColors.NeonIndigo.copy(alpha = 0.2f)
+                ) {
+                    Text(
+                        text = "${base.nightsAnalyzed} NIGHTS",
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = DozeDialColors.NeonIndigo
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(6.dp))
+
+            Text(
+                text = "Learned physiological thresholds personalized across multi-night sleep recordings.",
+                style = MaterialTheme.typography.bodySmall,
+                color = DozeDialColors.TextSecondary
+            )
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                StatCard(
+                    modifier = Modifier.weight(1f),
+                    title = "Rolling RHR",
+                    value = "%.1f".format(base.rollingRhr)
+                )
+                StatCard(
+                    modifier = Modifier.weight(1f),
+                    title = "Deep Std (σ)",
+                    value = "%.2f".format(base.deepSleepStdThreshold)
+                )
+                StatCard(
+                    modifier = Modifier.weight(1f),
+                    title = "Wake Spike",
+                    value = "+%.1f".format(base.wakeSpikeThreshold)
+                )
+                StatCard(
+                    modifier = Modifier.weight(1f),
+                    title = "Diurnal Dip",
+                    value = "%.0f%%".format(base.rollingDiurnalDip)
                 )
             }
         }
@@ -598,7 +1178,9 @@ fun SessionHistoryItem(
         modifier = Modifier
             .fillMaxWidth()
             .clickable { onClick() },
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = DozeDialColors.CardBackground),
+        border = androidx.compose.foundation.BorderStroke(1.dp, DozeDialColors.CardBorder)
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(
@@ -610,12 +1192,13 @@ fun SessionHistoryItem(
                     Text(
                         text = "Session #${session.sessionId}",
                         style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
                     )
                     Text(
                         text = startDateStr,
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = DozeDialColors.TextSecondary
                     )
                 }
 
@@ -623,40 +1206,40 @@ fun SessionHistoryItem(
                     Icon(
                         imageVector = Icons.Default.Delete,
                         contentDescription = "Delete Session",
-                        tint = MaterialTheme.colorScheme.error.copy(alpha = 0.7f)
+                        tint = DozeDialColors.SunriseCoral.copy(alpha = 0.7f)
                     )
                 }
             }
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Metrics Row
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Column {
-                    Text("Duration", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
-                    Text(durationStr, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                    Text("Duration", style = MaterialTheme.typography.labelSmall, color = DozeDialColors.TextTertiary)
+                    Text(durationStr, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, color = Color.White)
                 }
                 Column {
-                    Text("Samples", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
-                    Text("${session.totalSamples}", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                    Text("Samples", style = MaterialTheme.typography.labelSmall, color = DozeDialColors.TextTertiary)
+                    Text("${session.totalSamples}", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, color = Color.White)
                 }
                 Column {
-                    Text("Avg BPM", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                    Text("Avg BPM", style = MaterialTheme.typography.labelSmall, color = DozeDialColors.TextTertiary)
                     Text(
                         text = session.avgBpm?.let { "${it.roundToInt()} bpm" } ?: "--",
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary
+                        color = DozeDialColors.CelestialCyan
                     )
                 }
                 Column {
-                    Text("Range", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+                    Text("Range", style = MaterialTheme.typography.labelSmall, color = DozeDialColors.TextTertiary)
                     Text(
                         text = if (session.minBpm != null && session.maxBpm != null) "${session.minBpm}–${session.maxBpm}" else "--",
-                        style = MaterialTheme.typography.bodyMedium
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.White
                     )
                 }
             }
@@ -675,7 +1258,7 @@ fun SessionHistoryItem(
                         onDelete()
                     }
                 ) {
-                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                    Text("Delete", color = DozeDialColors.SunriseCoral)
                 }
             },
             dismissButton = {
@@ -691,6 +1274,7 @@ fun SessionHistoryItem(
 fun SessionDetailDialog(
     session: SleepSessionEntity,
     records: List<HeartRateRecordEntity>,
+    baseline: UserSleepBaselineEntity?,
     isLoadingRecords: Boolean,
     onDismiss: () -> Unit,
     onExportCsv: () -> Unit,
@@ -725,8 +1309,9 @@ fun SessionDetailDialog(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(16.dp),
-            shape = RoundedCornerShape(16.dp),
-            color = MaterialTheme.colorScheme.surface
+            shape = RoundedCornerShape(20.dp),
+            color = DozeDialColors.SurfaceDark,
+            border = androidx.compose.foundation.BorderStroke(1.dp, DozeDialColors.CardBorder)
         ) {
             Column(
                 modifier = Modifier
@@ -744,12 +1329,13 @@ fun SessionDetailDialog(
                         Text(
                             text = "Session #${session.sessionId}",
                             style = MaterialTheme.typography.headlineSmall,
-                            fontWeight = FontWeight.Bold
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
                         )
                         Text(
                             text = "Device: ${session.deviceName ?: session.deviceAddress}",
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                            color = DozeDialColors.TextSecondary
                         )
                     }
                     OutlinedButton(onClick = onDismiss) {
@@ -757,16 +1343,19 @@ fun SessionDetailDialog(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(10.dp))
 
                 Text(
                     text = "Start: $startStr\nEnd:   $endStr\nDuration: $durationStr",
                     style = MaterialTheme.typography.bodySmall,
                     fontFamily = FontFamily.Monospace,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = DozeDialColors.TextSecondary
                 )
 
-                HorizontalDivider(modifier = Modifier.padding(vertical = 12.dp))
+                HorizontalDivider(
+                    modifier = Modifier.padding(vertical = 12.dp),
+                    color = DozeDialColors.CardBorder
+                )
 
                 // Stats Cards
                 Row(
@@ -797,10 +1386,41 @@ fun SessionDetailDialog(
 
                 Spacer(modifier = Modifier.height(16.dp))
 
+                // 1. Hypnogram Sleep Stages Section
+                Text(
+                    text = "Hypnogram Sleep Stages",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                if (isLoadingRecords) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(150.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CircularProgressIndicator(color = DozeDialColors.NeonIndigo)
+                    }
+                } else {
+                    HypnogramChart(
+                        records = records,
+                        baseline = baseline ?: UserSleepBaselineEntity.default(),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // 2. Heart Rate Over Time Section
                 Text(
                     text = "Heart Rate Over Time (BPM)",
                     style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
                 )
 
                 Spacer(modifier = Modifier.height(8.dp))
@@ -812,7 +1432,7 @@ fun SessionDetailDialog(
                             .height(180.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        CircularProgressIndicator()
+                        CircularProgressIndicator(color = DozeDialColors.SunriseCoral)
                     }
                 } else {
                     HeartRateChart(
@@ -826,6 +1446,7 @@ fun SessionDetailDialog(
                 // Action Buttons
                 Button(
                     onClick = onExportCsv,
+                    colors = ButtonDefaults.buttonColors(containerColor = DozeDialColors.NeonIndigo),
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Icon(Icons.Default.Share, contentDescription = null)
@@ -841,7 +1462,7 @@ fun SessionDetailDialog(
                         onDismiss()
                     },
                     colors = ButtonDefaults.outlinedButtonColors(
-                        contentColor = MaterialTheme.colorScheme.error
+                        contentColor = DozeDialColors.SunriseCoral
                     ),
                     modifier = Modifier.fillMaxWidth()
                 ) {
@@ -862,15 +1483,17 @@ fun StatCard(
 ) {
     Card(
         modifier = modifier,
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+        colors = CardDefaults.cardColors(containerColor = DozeDialColors.CardBackground),
+        border = androidx.compose.foundation.BorderStroke(1.dp, DozeDialColors.CardBorder),
+        shape = RoundedCornerShape(10.dp)
     ) {
         Column(
             modifier = Modifier.padding(8.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Text(title, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.outline)
+            Text(title, style = MaterialTheme.typography.labelSmall, color = DozeDialColors.TextTertiary, fontSize = 10.sp)
             Spacer(modifier = Modifier.height(2.dp))
-            Text(value, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+            Text(value, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold, color = Color.White)
         }
     }
 }
@@ -878,37 +1501,35 @@ fun StatCard(
 @Composable
 fun PermissionRequiredCard(onRequestClick: () -> Unit) {
     Card(
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.errorContainer
-        )
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF450A0A)),
+        border = androidx.compose.foundation.BorderStroke(1.dp, DozeDialColors.SunriseCoral.copy(alpha = 0.5f)),
+        shape = RoundedCornerShape(16.dp)
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(
                     imageVector = Icons.Default.Error,
                     contentDescription = null,
-                    tint = MaterialTheme.colorScheme.error
+                    tint = DozeDialColors.SunriseCoral
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
                     text = "Permissions Required",
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onErrorContainer
+                    color = Color.White
                 )
             }
             Spacer(modifier = Modifier.height(6.dp))
             Text(
                 text = "DozeDial requires Bluetooth scanning/connection and notification permissions to stream and record heart rate data continuously overnight.",
                 style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onErrorContainer
+                color = DozeDialColors.TextSecondary
             )
             Spacer(modifier = Modifier.height(10.dp))
             Button(
                 onClick = onRequestClick,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.error
-                )
+                colors = ButtonDefaults.buttonColors(containerColor = DozeDialColors.SunriseCoral)
             ) {
                 Text("Grant Permissions")
             }
@@ -923,12 +1544,10 @@ fun BluetoothStatusBar(
 ) {
     Card(
         colors = CardDefaults.cardColors(
-            containerColor = if (isEnabled) {
-                MaterialTheme.colorScheme.secondaryContainer
-            } else {
-                MaterialTheme.colorScheme.errorContainer
-            }
-        )
+            containerColor = if (isEnabled) DozeDialColors.CardBackground else Color(0xFF450A0A)
+        ),
+        border = androidx.compose.foundation.BorderStroke(1.dp, DozeDialColors.CardBorder),
+        shape = RoundedCornerShape(14.dp)
     ) {
         Row(
             modifier = Modifier
@@ -941,19 +1560,21 @@ fun BluetoothStatusBar(
                 Icon(
                     imageVector = if (isEnabled) Icons.Default.Bluetooth else Icons.Default.BluetoothDisabled,
                     contentDescription = null,
-                    tint = if (isEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+                    tint = if (isEnabled) DozeDialColors.CelestialCyan else DozeDialColors.SunriseCoral
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
                     text = if (isEnabled) "Bluetooth: ON" else "Bluetooth: OFF",
                     style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color.White
                 )
             }
             if (!isEnabled) {
                 Button(
                     onClick = onEnableClick,
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp)
+                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = DozeDialColors.SunriseCoral)
                 ) {
                     Text("Turn On")
                 }
@@ -965,15 +1586,16 @@ fun BluetoothStatusBar(
 @Composable
 fun FitbitAirPreparationCard() {
     Card(
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant
-        )
+        colors = CardDefaults.cardColors(containerColor = DozeDialColors.CardBackground),
+        shape = RoundedCornerShape(16.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, DozeDialColors.CardBorder)
     ) {
         Column(modifier = Modifier.padding(14.dp)) {
             Text(
                 text = "Before connecting:",
                 style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold
+                fontWeight = FontWeight.Bold,
+                color = Color.White
             )
             Spacer(modifier = Modifier.height(4.dp))
             Text(
@@ -982,7 +1604,8 @@ fun FitbitAirPreparationCard() {
                     "3. Enable Share heart rate for Fitbit Air.\n" +
                     "4. Return here and tap Scan.",
                 style = MaterialTheme.typography.bodyMedium,
-                lineHeight = 20.sp
+                lineHeight = 20.sp,
+                color = DozeDialColors.TextSecondary
             )
         }
     }
@@ -996,31 +1619,27 @@ fun ScanControlSection(
     onStartScan: () -> Unit,
     onStopScan: () -> Unit
 ) {
-    Row(
+    Button(
+        onClick = {
+            if (isScanning) onStopScan() else onStartScan()
+        },
+        enabled = hasPermissions && isBtEnabled,
         modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
+        shape = RoundedCornerShape(12.dp),
+        colors = ButtonDefaults.buttonColors(containerColor = DozeDialColors.NeonIndigo)
     ) {
-        Button(
-            onClick = {
-                if (isScanning) onStopScan() else onStartScan()
-            },
-            enabled = hasPermissions && isBtEnabled,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            if (isScanning) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(18.dp),
-                    color = MaterialTheme.colorScheme.onPrimary,
-                    strokeWidth = 2.dp
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Stop Scan")
-            } else {
-                Icon(Icons.Default.Refresh, contentDescription = null)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("Scan for Devices")
-            }
+        if (isScanning) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(18.dp),
+                color = Color.White,
+                strokeWidth = 2.dp
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("Stop Scan")
+        } else {
+            Icon(Icons.Default.Refresh, contentDescription = null)
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("Scan for Fitbit Air")
         }
     }
 }
@@ -1034,12 +1653,16 @@ fun DiscoveredDeviceItem(
     Card(
         colors = CardDefaults.cardColors(
             containerColor = if (device.isLikelyFitbitAir) {
-                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)
+                DozeDialColors.NeonIndigo.copy(alpha = 0.2f)
             } else {
-                MaterialTheme.colorScheme.surface
+                DozeDialColors.CardBackground
             }
         ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        shape = RoundedCornerShape(14.dp),
+        border = androidx.compose.foundation.BorderStroke(
+            1.dp,
+            if (device.isLikelyFitbitAir) DozeDialColors.NeonIndigo.copy(alpha = 0.6f) else DozeDialColors.CardBorder
+        )
     ) {
         Row(
             modifier = Modifier
@@ -1053,20 +1676,21 @@ fun DiscoveredDeviceItem(
                     Text(
                         text = device.displayName,
                         style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
                     )
                     if (device.isLikelyFitbitAir) {
                         Spacer(modifier = Modifier.width(6.dp))
                         Box(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(4.dp))
-                                .background(MaterialTheme.colorScheme.primary)
+                                .background(DozeDialColors.NeonIndigo)
                                 .padding(horizontal = 6.dp, vertical = 2.dp)
                         ) {
                             Text(
                                 text = "Fitbit Air",
                                 style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onPrimary
+                                color = Color.White
                             )
                         }
                     }
@@ -1075,25 +1699,19 @@ fun DiscoveredDeviceItem(
                 Text(
                     text = "MAC: ${device.address}",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = DozeDialColors.TextSecondary
                 )
                 Text(
                     text = "RSSI: ${device.rssi} dBm",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = DozeDialColors.TextTertiary
                 )
-                if (device.advertisedServices.isNotEmpty()) {
-                    Text(
-                        text = "Services: ${device.advertisedServices.joinToString { it.toString().take(8) + "…" }}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.outline
-                    )
-                }
             }
 
             Button(
                 onClick = onConnectClick,
-                enabled = !isConnecting
+                enabled = !isConnecting,
+                colors = ButtonDefaults.buttonColors(containerColor = DozeDialColors.NeonIndigo)
             ) {
                 Text("Connect")
             }
@@ -1104,9 +1722,8 @@ fun DiscoveredDeviceItem(
 @Composable
 fun EmptyDevicesCard(isScanning: Boolean) {
     Card(
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-        )
+        colors = CardDefaults.cardColors(containerColor = DozeDialColors.CardBackground.copy(alpha = 0.5f)),
+        shape = RoundedCornerShape(14.dp)
     ) {
         Column(
             modifier = Modifier
@@ -1115,219 +1732,14 @@ fun EmptyDevicesCard(isScanning: Boolean) {
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             if (isScanning) {
-                CircularProgressIndicator(modifier = Modifier.size(32.dp))
+                CircularProgressIndicator(modifier = Modifier.size(32.dp), color = DozeDialColors.NeonIndigo)
                 Spacer(modifier = Modifier.height(12.dp))
-                Text("Scanning for nearby Bluetooth devices…")
+                Text("Scanning for nearby Bluetooth devices…", color = Color.White)
             } else {
                 Text(
-                    text = "No devices discovered yet.\nTap 'Scan for Devices' to begin.",
+                    text = "No devices discovered yet.\nTap 'Scan for Fitbit Air' to begin.",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-    }
-}
-
-@Composable
-fun LiveHeartRateCard(
-    connectionState: BleConnectionState,
-    sample: HeartRateSample?,
-    packetCount: Int,
-    lastTimestamp: Instant?,
-    onDisconnect: () -> Unit
-) {
-    val timeFormatter = remember {
-        DateTimeFormatter.ofPattern("HH:mm:ss").withZone(ZoneId.systemDefault())
-    }
-
-    Card(
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            // Status row
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    when (connectionState) {
-                        is BleConnectionState.Connected -> {
-                            Icon(
-                                Icons.Default.CheckCircle,
-                                contentDescription = null,
-                                tint = Color(0xFF2E7D32),
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "Connection: Connected",
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.Bold,
-                                color = Color(0xFF2E7D32)
-                            )
-                        }
-                        is BleConnectionState.Connecting -> {
-                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Connection: Connecting…", style = MaterialTheme.typography.labelLarge)
-                        }
-                        is BleConnectionState.DiscoveringServices -> {
-                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Discovering Services…", style = MaterialTheme.typography.labelLarge)
-                        }
-                        is BleConnectionState.SubscribingToNotifications -> {
-                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Subscribing to HR Notifications…", style = MaterialTheme.typography.labelLarge)
-                        }
-                        is BleConnectionState.Failed -> {
-                            Icon(
-                                Icons.Default.Error,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.error,
-                                modifier = Modifier.size(18.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "Failed: ${connectionState.error}",
-                                style = MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.error
-                            )
-                        }
-                        else -> {
-                            Text("Status: ${connectionState::class.simpleName}")
-                        }
-                    }
-                }
-
-                OutlinedButton(
-                    onClick = onDisconnect,
-                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 2.dp)
-                ) {
-                    Text("Disconnect")
-                }
-            }
-
-            HorizontalDivider(
-                modifier = Modifier.padding(vertical = 12.dp),
-                color = DividerDefaults.color.copy(alpha = 0.5f)
-            )
-
-            // Heart Rate section
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Favorite,
-                    contentDescription = null,
-                    tint = Color(0xFFE53935),
-                    modifier = Modifier.size(36.dp)
-                )
-                Spacer(modifier = Modifier.width(12.dp))
-                Column {
-                    Text(
-                        text = "Heart Rate",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        text = if (sample != null) "${sample.bpm} BPM" else "-- BPM",
-                        style = MaterialTheme.typography.headlineLarge,
-                        fontWeight = FontWeight.ExtraBold,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            // RR Intervals section
-            Column {
-                Text(
-                    text = "RR Intervals",
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.SemiBold
-                )
-                if (sample?.rrIntervalsMs?.isNotEmpty() == true) {
-                    for (rrMs in sample.rrIntervalsMs) {
-                        Text(
-                            text = "$rrMs ms",
-                            style = MaterialTheme.typography.bodyLarge,
-                            fontWeight = FontWeight.Medium,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                } else {
-                    Text(
-                        text = if (sample == null) "Waiting for packets…" else "None in current packet (Normal for Fitbit Air)",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            // Sensor contact info
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text(
-                    text = "Sensor Contact",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                val contactText = when (sample?.sensorContactDetected) {
-                    true -> "Detected"
-                    false -> "Not Detected"
-                    null -> "Not Supported"
-                }
-                Text(
-                    text = contactText,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.SemiBold
-                )
-            }
-
-            // Packets received
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text(
-                    text = "Packets received",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    text = "$packetCount",
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.SemiBold
-                )
-            }
-
-            // Last update
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Text(
-                    text = "Last update",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Text(
-                    text = lastTimestamp?.let { timeFormatter.format(it) } ?: "--:--:--",
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.SemiBold
+                    color = DozeDialColors.TextSecondary
                 )
             }
         }
@@ -1337,13 +1749,13 @@ fun LiveHeartRateCard(
 @Composable
 fun DeveloperDebugSection(
     isExpanded: Boolean,
-    sample: HeartRateSample?,
+    sample: com.dozedial.data.HeartRateSample?,
     onToggle: () -> Unit
 ) {
     Card(
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant
-        )
+        colors = CardDefaults.cardColors(containerColor = DozeDialColors.CardBackground),
+        shape = RoundedCornerShape(14.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, DozeDialColors.CardBorder)
     ) {
         Column(modifier = Modifier.padding(14.dp)) {
             Row(
@@ -1354,17 +1766,19 @@ fun DeveloperDebugSection(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Speed, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Icon(Icons.Default.Speed, contentDescription = null, modifier = Modifier.size(18.dp), tint = DozeDialColors.CelestialCyan)
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
                         text = "Developer / Debug Mode",
                         style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
                     )
                 }
                 Icon(
                     imageVector = if (isExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
-                    contentDescription = null
+                    contentDescription = null,
+                    tint = DozeDialColors.TextSecondary
                 )
             }
 
@@ -1377,13 +1791,14 @@ fun DeveloperDebugSection(
                     Text(
                         text = "Raw packet:",
                         style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold
+                        fontWeight = FontWeight.Bold,
+                        color = DozeDialColors.TextSecondary
                     )
                     Text(
                         text = sample?.rawBytesHex ?: "No packet received yet",
                         style = MaterialTheme.typography.bodySmall,
                         fontFamily = FontFamily.Monospace,
-                        color = MaterialTheme.colorScheme.primary
+                        color = DozeDialColors.CelestialCyan
                     )
 
                     Spacer(modifier = Modifier.height(6.dp))
@@ -1392,20 +1807,23 @@ fun DeveloperDebugSection(
                     Text(
                         text = "HR format: ${if (isUint16) "UINT16" else "UINT8"}",
                         style = MaterialTheme.typography.bodySmall,
-                        fontFamily = FontFamily.Monospace
+                        fontFamily = FontFamily.Monospace,
+                        color = Color.White
                     )
 
                     Text(
                         text = "RR intervals: ${sample?.rrIntervalsMs?.size ?: 0}",
                         style = MaterialTheme.typography.bodySmall,
-                        fontFamily = FontFamily.Monospace
+                        fontFamily = FontFamily.Monospace,
+                        color = Color.White
                     )
 
                     if (sample?.energyExpended != null) {
                         Text(
                             text = "Energy expended: ${sample.energyExpended} kJ",
                             style = MaterialTheme.typography.bodySmall,
-                            fontFamily = FontFamily.Monospace
+                            fontFamily = FontFamily.Monospace,
+                            color = Color.White
                         )
                     }
                 }

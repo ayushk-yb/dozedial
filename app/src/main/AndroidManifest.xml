@@ -31,8 +31,13 @@
     <!-- Foreground Service permissions for overnight continuous collection -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
 
     <application
         android:name=".DozeDialApplication"
@@ -52,9 +57,27 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".alarm.AlarmWakeActivity"
+            android:exported="false"
+            android:showWhenLocked="true"
+            android:turnScreenOn="true"
+            android:showForAllUsers="true"
+            android:excludeFromRecents="true"
+            android:theme="@style/Theme.DozeDial" />
+
         <service
             android:name=".service.HeartRateCollectionService"
             android:foregroundServiceType="connectedDevice"
+            android:exported="false" />
+
+        <service
+            android:name=".alarm.AlarmPlaybackService"
+            android:foregroundServiceType="mediaPlayback"
+            android:exported="false" />
+
+        <receiver
+            android:name=".alarm.SmartAlarmReceiver"
             android:exported="false" />
 
         <provider

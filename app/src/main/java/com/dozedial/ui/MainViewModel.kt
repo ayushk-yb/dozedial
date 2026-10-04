@@ -31,6 +31,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.time.Instant
 
+import com.dozedial.alarm.AlarmConfig
+import com.dozedial.alarm.AlarmPreferences
+import com.dozedial.alarm.SmartAlarmManager
+import com.dozedial.data.baseline.UserSleepBaselineEntity
+
 data class MainUiState(
     val isBluetoothEnabled: Boolean = false,
     val isScanning: Boolean = false,
@@ -44,12 +49,16 @@ data class MainUiState(
     val sessions: List<SleepSessionEntity> = emptyList(),
     val selectedSession: SleepSessionEntity? = null,
     val selectedSessionRecords: List<HeartRateRecordEntity> = emptyList(),
-    val isLoadingSessionRecords: Boolean = false
+    val isLoadingSessionRecords: Boolean = false,
+    val alarmConfig: AlarmConfig = AlarmConfig(),
+    val baseline: UserSleepBaselineEntity? = null,
+    val liveRollingSamples: List<Int> = emptyList()
 )
 
 /**
  * ViewModel orchestrating BLE scanning, GATT connection, live telemetry,
- * overnight collection foreground service lifecycle, and historical sleep sessions.
+ * overnight collection foreground service lifecycle, historical sleep sessions,
+ * adaptive baseline model, and smart alarm subsystem.
  */
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -65,6 +74,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     )
 
     private val database = dozeDialApp?.database
+    private val alarmPrefs = AlarmPreferences(application)
 
     private val _isBluetoothEnabled = MutableStateFlow(bluetoothAdapter?.isEnabled == true)
     private val _totalPacketsReceived = MutableStateFlow(0)
@@ -77,57 +87,88 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _selectedSessionRecords = MutableStateFlow<List<HeartRateRecordEntity>>(emptyList())
     private val _isLoadingSessionRecords = MutableStateFlow(false)
 
-    val uiState: StateFlow<MainUiState> = combine(
-        _isBluetoothEnabled,
-        heartRateMonitor.isScanning,
-        heartRateMonitor.discoveredDevices,
-        heartRateMonitor.connectionState,
-        _latestSample,
-        _totalPacketsReceived,
-        _lastPacketTimestamp,
-        _isDebugExpanded,
-        HeartRateCollectionService.recordingState,
-        _sessions,
-        _selectedSession,
-        _selectedSessionRecords,
-        _isLoadingSessionRecords
-    ) { params ->
-        val btEnabled = params[0] as Boolean
-        val scanning = params[1] as Boolean
-        @Suppress("UNCHECKED_CAST")
-        val devices = params[2] as List<BleDevice>
-        val connState = params[3] as BleConnectionState
-        val sample = params[4] as? HeartRateSample
-        val packetCount = params[5] as Int
-        val lastTime = params[6] as? Instant
-        val debugExp = params[7] as Boolean
-        val recState = params[8] as HeartRateCollectionService.RecordingState
-        @Suppress("UNCHECKED_CAST")
-        val sessionsList = params[9] as List<SleepSessionEntity>
-        val selSession = params[10] as? SleepSessionEntity
-        @Suppress("UNCHECKED_CAST")
-        val selRecords = params[11] as List<HeartRateRecordEntity>
-        val loadingRecs = params[12] as Boolean
+    private val _baseline = MutableStateFlow<UserSleepBaselineEntity?>(null)
+    private val _liveRollingSamples = MutableStateFlow<List<Int>>(emptyList())
 
+    private data class BlePart(
+        val isBluetoothEnabled: Boolean,
+        val isScanning: Boolean,
+        val discoveredDevices: List<BleDevice>,
+        val connectionState: BleConnectionState,
+        val latestSample: HeartRateSample?
+    )
+
+    private data class ServicePart(
+        val totalPacketsReceived: Int,
+        val lastPacketTimestamp: Instant?,
+        val isDebugExpanded: Boolean,
+        val recordingState: HeartRateCollectionService.RecordingState,
+        val alarmConfig: AlarmConfig
+    )
+
+    private data class StoragePart(
+        val sessions: List<SleepSessionEntity>,
+        val selectedSession: SleepSessionEntity?,
+        val selectedSessionRecords: List<HeartRateRecordEntity>,
+        val isLoadingSessionRecords: Boolean,
+        val baseline: UserSleepBaselineEntity?
+    )
+
+    val uiState: StateFlow<MainUiState> = combine(
+        combine(
+            _isBluetoothEnabled,
+            heartRateMonitor.isScanning,
+            heartRateMonitor.discoveredDevices,
+            heartRateMonitor.connectionState,
+            _latestSample
+        ) { bt, scan, dev, conn, samp ->
+            BlePart(bt, scan, dev, conn, samp)
+        },
+        combine(
+            _totalPacketsReceived,
+            _lastPacketTimestamp,
+            _isDebugExpanded,
+            HeartRateCollectionService.recordingState,
+            alarmPrefs.config
+        ) { packets, lastTime, debug, rec, alarm ->
+            ServicePart(packets, lastTime, debug, rec, alarm)
+        },
+        combine(
+            _sessions,
+            _selectedSession,
+            _selectedSessionRecords,
+            _isLoadingSessionRecords,
+            _baseline
+        ) { sessions, sel, records, loading, base ->
+            StoragePart(sessions, sel, records, loading, base)
+        },
+        _liveRollingSamples
+    ) { ble, srv, stor, rollSamples ->
         MainUiState(
-            isBluetoothEnabled = btEnabled,
-            isScanning = scanning,
-            discoveredDevices = devices,
-            connectionState = connState,
-            latestSample = sample,
-            totalPacketsReceived = packetCount,
-            lastPacketTimestamp = lastTime,
-            isDebugExpanded = debugExp,
-            recordingState = recState,
-            sessions = sessionsList,
-            selectedSession = selSession,
-            selectedSessionRecords = selRecords,
-            isLoadingSessionRecords = loadingRecs
+            isBluetoothEnabled = ble.isBluetoothEnabled,
+            isScanning = ble.isScanning,
+            discoveredDevices = ble.discoveredDevices,
+            connectionState = ble.connectionState,
+            latestSample = ble.latestSample,
+            totalPacketsReceived = srv.totalPacketsReceived,
+            lastPacketTimestamp = srv.lastPacketTimestamp,
+            isDebugExpanded = srv.isDebugExpanded,
+            recordingState = srv.recordingState,
+            sessions = stor.sessions,
+            selectedSession = stor.selectedSession,
+            selectedSessionRecords = stor.selectedSessionRecords,
+            isLoadingSessionRecords = stor.isLoadingSessionRecords,
+            alarmConfig = srv.alarmConfig,
+            baseline = stor.baseline,
+            liveRollingSamples = rollSamples
         )
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
-        initialValue = MainUiState(isBluetoothEnabled = bluetoothAdapter?.isEnabled == true)
+        initialValue = MainUiState(
+            isBluetoothEnabled = bluetoothAdapter?.isEnabled == true,
+            alarmConfig = alarmPrefs.loadConfig()
+        )
     )
 
     private val bluetoothStateReceiver = object : BroadcastReceiver() {
@@ -175,7 +216,52 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     _sessions.value = sessionList
                 }
             }
+
+            viewModelScope.launch {
+                db.userSleepBaselineDao().getBaseline().collect { base ->
+                    _baseline.value = base
+                }
+            }
         }
+
+        // Update live rolling sample buffer
+        viewModelScope.launch {
+            heartRateMonitor.samples.collect { sample ->
+                _liveRollingSamples.update { list ->
+                    (list + sample.bpm).takeLast(120)
+                }
+            }
+        }
+    }
+
+    fun updateAlarmConfig(newConfig: AlarmConfig) {
+        alarmPrefs.saveConfig(newConfig)
+        if (newConfig.isEnabled) {
+            SmartAlarmManager.scheduleExactSafetyAlarm(getApplication(), newConfig)
+        } else {
+            SmartAlarmManager.cancelSafetyAlarm(getApplication())
+        }
+    }
+
+    fun toggleAlarmEnabled() {
+        val current = alarmPrefs.loadConfig()
+        updateAlarmConfig(current.copy(isEnabled = !current.isEnabled))
+    }
+
+    fun oneTapSleep() {
+        val current = alarmPrefs.loadConfig()
+        if (!current.isEnabled) {
+            updateAlarmConfig(current.copy(isEnabled = true))
+        }
+        startOvernightRecording()
+    }
+
+    fun testAlarmPreview() {
+        SmartAlarmManager.triggerAlarmNow(
+            context = getApplication(),
+            reason = "Sunrise & Audio Crescendo Test",
+            stage = com.dozedial.engine.SleepStage.LIGHT
+        )
     }
 
     fun startScan() {
