@@ -9,8 +9,10 @@ import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.animation.AnimatedVisibility
@@ -38,6 +40,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -108,6 +111,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -141,6 +145,10 @@ class MainActivity : ComponentActivity() {
     private val viewModel: MainViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge(
+            statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT)
+        )
         super.onCreate(savedInstanceState)
         setContent {
             MaterialTheme(colorScheme = DozeDialColors.DarkColorScheme) {
@@ -214,7 +222,12 @@ fun MainScreen(viewModel: MainViewModel) {
 
     Scaffold(
         topBar = {
-            Column(modifier = Modifier.background(DozeDialColors.MidnightBlack)) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(DozeDialColors.MidnightBlack)
+                    .statusBarsPadding()
+            ) {
                 HeaderSection(connectionState = uiState.connectionState)
                 TabRow(
                     selectedTabIndex = selectedTabIndex,
@@ -343,22 +356,28 @@ fun HeaderSection(connectionState: BleConnectionState) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        Column {
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .padding(end = 12.dp)
+        ) {
             Text(
                 text = "DozeDial",
-                style = MaterialTheme.typography.headlineMedium,
+                style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.ExtraBold,
                 color = DozeDialColors.NeonIndigo,
                 letterSpacing = 0.5.sp
             )
             Text(
                 text = "Autonomous Sleep Staging & Smart-Alarm",
-                style = MaterialTheme.typography.bodySmall,
-                color = DozeDialColors.TextSecondary
+                style = MaterialTheme.typography.labelSmall,
+                color = DozeDialColors.TextSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
         }
 
@@ -751,16 +770,18 @@ fun OvernightRecordingHeroCard(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Column {
+                    Column(modifier = Modifier.weight(1f)) {
                         Text("Live Stage", style = MaterialTheme.typography.labelSmall, color = DozeDialColors.TextSecondary)
                         Text(
                             recordingState.currentStage.displayName,
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.Bold,
-                            color = Color(recordingState.currentStage.colorHex)
+                            color = Color(recordingState.currentStage.colorHex),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
-                    Column {
+                    Column(modifier = Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
                         Text("Live HR", style = MaterialTheme.typography.labelSmall, color = DozeDialColors.TextSecondary)
                         Text(
                             recordingState.currentBpm?.let { "$it BPM" } ?: "--",
@@ -769,7 +790,7 @@ fun OvernightRecordingHeroCard(
                             color = Color.White
                         )
                     }
-                    Column {
+                    Column(modifier = Modifier.weight(1f), horizontalAlignment = Alignment.End) {
                         Text("Packets", style = MaterialTheme.typography.labelSmall, color = DozeDialColors.TextSecondary)
                         Text(
                             "${recordingState.sampleCount}",

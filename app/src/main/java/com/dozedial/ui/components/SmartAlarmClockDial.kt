@@ -53,11 +53,11 @@ fun SmartAlarmClockDial(
     val trackColor = Color(0xFF1E293B).copy(alpha = 0.8f)
 
     Box(
-        modifier = modifier.size(240.dp),
+        modifier = modifier.size(200.dp),
         contentAlignment = Alignment.Center
     ) {
-        Canvas(modifier = Modifier.size(230.dp)) {
-            val strokeWidth = 14f
+        Canvas(modifier = Modifier.size(190.dp)) {
+            val strokeWidth = 12f
             val arcSize = size.width - strokeWidth
             val topLeft = Offset(strokeWidth / 2f, strokeWidth / 2f)
             val canvasSize = Size(arcSize, arcSize)
@@ -77,8 +77,8 @@ fun SmartAlarmClockDial(
             for (i in 0 until 12) {
                 val tickAngleDeg = (i * 30f) - 90f
                 val rad = Math.toRadians(tickAngleDeg.toDouble())
-                val radiusOuter = (size.width / 2f) - 18f
-                val radiusInner = radiusOuter - (if (i % 3 == 0) 8f else 4f)
+                val radiusOuter = (size.width / 2f) - 15f
+                val radiusInner = radiusOuter - (if (i % 3 == 0) 7f else 3.5f)
                 val cx = size.width / 2f
                 val cy = size.height / 2f
 
@@ -95,7 +95,7 @@ fun SmartAlarmClockDial(
                     color = Color(0xFF475569).copy(alpha = 0.5f),
                     start = start,
                     end = end,
-                    strokeWidth = if (i % 3 == 0) 2.5f else 1.5f
+                    strokeWidth = if (i % 3 == 0) 2f else 1f
                 )
             }
 
@@ -113,7 +113,7 @@ fun SmartAlarmClockDial(
                     useCenter = false,
                     topLeft = topLeft,
                     size = canvasSize,
-                    style = Stroke(width = strokeWidth + 4f, cap = StrokeCap.Round)
+                    style = Stroke(width = strokeWidth + 3f, cap = StrokeCap.Round)
                 )
             }
 
@@ -126,13 +126,13 @@ fun SmartAlarmClockDial(
             // Outer glow circle
             drawCircle(
                 color = targetMarkerColor.copy(alpha = 0.4f),
-                radius = 12f,
+                radius = 10f,
                 center = Offset(markerX, markerY)
             )
             // Solid center pin
             drawCircle(
                 color = Color.White,
-                radius = 6f,
+                radius = 5f,
                 center = Offset(markerX, markerY)
             )
         }
@@ -140,7 +140,7 @@ fun SmartAlarmClockDial(
         // Center Content
         Box(
             modifier = Modifier
-                .size(175.dp)
+                .size(145.dp)
                 .clip(CircleShape)
                 .background(DozeDialColors.CardBackground.copy(alpha = 0.85f)),
             contentAlignment = Alignment.Center
@@ -151,14 +151,15 @@ fun SmartAlarmClockDial(
                     style = MaterialTheme.typography.labelSmall,
                     letterSpacing = 1.sp,
                     fontWeight = FontWeight.Bold,
-                    color = if (config.isEnabled) DozeDialColors.CelestialCyan else Color.Gray
+                    color = if (config.isEnabled) DozeDialColors.CelestialCyan else Color.Gray,
+                    fontSize = 10.sp
                 )
 
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(3.dp))
 
                 Text(
                     text = config.formattedTargetTime(),
-                    style = MaterialTheme.typography.headlineMedium.copy(fontSize = 28.sp),
+                    style = MaterialTheme.typography.headlineMedium.copy(fontSize = 24.sp),
                     fontWeight = FontWeight.ExtraBold,
                     fontFamily = FontFamily.Monospace,
                     color = if (config.isEnabled) Color.White else Color.Gray
@@ -171,7 +172,8 @@ fun SmartAlarmClockDial(
                         text = "Window: ${config.smartWindowMinutes}m",
                         style = MaterialTheme.typography.labelSmall,
                         color = DozeDialColors.EmeraldSleep,
-                        fontWeight = FontWeight.SemiBold
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 11.sp
                     )
                 }
             }
