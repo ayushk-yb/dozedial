@@ -165,10 +165,23 @@ DozeDial requests only the minimal permissions required for Bluetooth Low Energy
 - Ensure the Fitbit Air battery is sufficiently charged.
 
 ### 5. BPM updates arrive but RR intervals are absent
-- Some fitness trackers only emit RR intervals when the user is at rest or in certain firmware modes, or omit RR intervals from packets when sensor contact is poor. Check the "Developer / Debug Mode" packet view to inspect incoming packet flags.
+- **Verified Hardware Observation**: In physical testing with the Fitbit Air, heart rate measurements are broadcast in **UINT16** format with RR intervals set to **0** (flag bit 4 is `0`).
+- The Fitbit Air "Share heart rate" feature is primarily designed for fitness equipment broadcasts (e.g. gym monitors, treadmills) which stream filtered instantaneous heart rate (BPM) rather than raw beat-to-beat variability (RR intervals).
+- The `HeartRateParser` retains full support for RR intervals if emitted under rest/sleep states, while future sleep-cycle estimators can leverage continuous BPM time-series dynamics (diurnal dips, moving averages, and local variance).
 
 ### 6. Unexpected Disconnection
 - If the Bluetooth link drops unexpectedly, DozeDial automatically executes up to 3 bounded reconnection attempts with exponential backoff (1s, 2s, 4s). Manual disconnect immediately stops retries.
+
+---
+
+## Hardware Verification Status
+
+- **Device**: Physical Fitbit Air
+- **Mode**: Google Health → Fitbit Air → Share heart rate → ON
+- **Format**: `UINT16` format verified (`FLAG_HR_FORMAT_UINT16 = 1`)
+- **Streaming**: Verified continuous real-time BPM refresh
+- **RR Intervals**: 0 reported in current active broadcast mode
+- **Status**: **Fully Verified on Real Hardware** ✅
 
 ---
 
