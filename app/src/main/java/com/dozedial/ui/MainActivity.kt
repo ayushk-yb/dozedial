@@ -127,6 +127,7 @@ import com.dozedial.data.db.HeartRateRecordEntity
 import com.dozedial.data.db.SleepSessionEntity
 import com.dozedial.engine.SleepStage
 import com.dozedial.service.HeartRateCollectionService
+import com.dozedial.ui.components.AlarmTonePickerCard
 import com.dozedial.ui.components.AutonomicMetricsGrid
 import com.dozedial.ui.components.HypnogramChart
 import com.dozedial.ui.components.LiveHeartRateGauge
@@ -593,7 +594,15 @@ fun SleepAndAlarmTab(
             }
         }
 
-        // 3. Smart Window & Wake Options Card
+        // 3. Alarm Sound & Melody Card
+        item {
+            AlarmTonePickerCard(
+                config = config,
+                onUpdateConfig = onUpdateConfig
+            )
+        }
+
+        // 4. Smart Window & Wake Options Card
         item {
             Card(
                 colors = CardDefaults.cardColors(containerColor = DozeDialColors.CardBackground),
