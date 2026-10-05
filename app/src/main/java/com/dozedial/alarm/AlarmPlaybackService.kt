@@ -7,9 +7,12 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.media.AudioAttributes
+import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.MediaPlayer
+import android.media.Ringtone
 import android.media.RingtoneManager
 import android.net.Uri
 import android.os.Build
@@ -35,8 +38,10 @@ class AlarmPlaybackService : Service() {
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private var mediaPlayer: MediaPlayer? = null
+    private var ringtoneFallback: Ringtone? = null
     private var vibrator: Vibrator? = null
     private var crescendoJob: Job? = null
+    private var audioFocusRequest: AudioFocusRequest? = null
     private var isPlaying = false
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -66,30 +71,78 @@ class AlarmPlaybackService : Service() {
 
         val prefs = AlarmPreferences(this).loadConfig()
 
-        // 1. Post Foreground Notification with full-screen intent
+        // 1. Post Foreground Notification with full-screen intent & correct foregroundServiceType
         val notification = buildAlarmNotification(reason, stage)
-        startForeground(NOTIFICATION_ID, notification)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(
+                NOTIFICATION_ID,
+                notification,
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
 
-        // 2. Setup Audio Player with Crescendo
-        try {
-            val alertUri: Uri = prefs.ringtoneUri?.let { Uri.parse(it) }
-                ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
-                ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+        // 2. Request Audio Focus
+        requestAlarmAudioFocus()
 
-            mediaPlayer = MediaPlayer().apply {
-                setDataSource(applicationContext, alertUri)
-                setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_ALARM)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                        .build()
-                )
-                isLooping = true
-                setVolume(0.10f, 0.10f)
-                prepare()
-                start()
+        // 3. Setup Audio Player with Crescendo & Fallback
+        playAlarmAudio(prefs)
+
+        // 4. Setup Progressive Haptics
+        if (prefs.vibrate) {
+            startVibration()
+        }
+    }
+
+    private fun playAlarmAudio(prefs: AlarmConfig) {
+        // Ensure alarm stream volume is audible
+        val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        audioManager?.let { am ->
+            try {
+                val currentVol = am.getStreamVolume(AudioManager.STREAM_ALARM)
+                val maxVol = am.getStreamMaxVolume(AudioManager.STREAM_ALARM)
+                if (currentVol == 0 && maxVol > 0) {
+                    am.setStreamVolume(AudioManager.STREAM_ALARM, (maxVol * 0.6f).toInt().coerceAtLeast(1), 0)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Could not check/adjust STREAM_ALARM volume", e)
             }
+        }
 
+        val uriCandidates = listOfNotNull(
+            prefs.ringtoneUri?.let { Uri.parse(it) },
+            RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM),
+            RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE),
+            RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+        )
+
+        var started = false
+        for (alertUri in uriCandidates) {
+            try {
+                val player = MediaPlayer().apply {
+                    setDataSource(applicationContext, alertUri)
+                    setAudioAttributes(
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_ALARM)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                            .build()
+                    )
+                    isLooping = true
+                    setVolume(0.10f, 0.10f)
+                    prepare()
+                    start()
+                }
+                mediaPlayer = player
+                started = true
+                Log.i(TAG, "MediaPlayer successfully started with URI: $alertUri")
+                break
+            } catch (e: Exception) {
+                Log.w(TAG, "MediaPlayer failed for URI: $alertUri, trying next candidate", e)
+            }
+        }
+
+        if (started && mediaPlayer != null) {
             // Ramp up volume over crescendoSeconds
             val rampSeconds = prefs.crescendoSeconds.coerceIn(10, 120)
             crescendoJob = serviceScope.launch {
@@ -105,13 +158,68 @@ class AlarmPlaybackService : Service() {
                     } catch (_: Exception) {}
                 }
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error initializing MediaPlayer for alarm", e)
+        } else {
+            // Fallback: system ringtone player
+            Log.w(TAG, "MediaPlayer failed for all candidates. Falling back to RingtoneManager.getRingtone")
+            try {
+                val fallbackUri = uriCandidates.firstOrNull() ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+                ringtoneFallback = RingtoneManager.getRingtone(applicationContext, fallbackUri)?.apply {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                        audioAttributes = AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_ALARM)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                            .build()
+                    }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                        isLooping = true
+                    }
+                    play()
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Ringtone fallback also failed", e)
+            }
         }
+    }
 
-        // 3. Setup Progressive Haptics
-        if (prefs.vibrate) {
-            startVibration()
+    private fun requestAlarmAudioFocus() {
+        val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val playbackAttributes = AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ALARM)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build()
+                val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
+                    .setAudioAttributes(playbackAttributes)
+                    .setOnAudioFocusChangeListener { /* maintain alarm focus */ }
+                    .build()
+                audioFocusRequest = request
+                audioManager.requestAudioFocus(request)
+            } else {
+                @Suppress("DEPRECATION")
+                audioManager.requestAudioFocus(
+                    null,
+                    AudioManager.STREAM_ALARM,
+                    AudioManager.AUDIOFOCUS_GAIN_TRANSIENT
+                )
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not request audio focus", e)
+        }
+    }
+
+    private fun abandonAlarmAudioFocus() {
+        val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager ?: return
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                audioFocusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
+                audioFocusRequest = null
+            } else {
+                @Suppress("DEPRECATION")
+                audioManager.abandonAudioFocus(null)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not abandon audio focus", e)
         }
     }
 
@@ -150,10 +258,16 @@ class AlarmPlaybackService : Service() {
         mediaPlayer = null
 
         try {
+            ringtoneFallback?.stop()
+        } catch (_: Exception) {}
+        ringtoneFallback = null
+
+        try {
             vibrator?.cancel()
         } catch (_: Exception) {}
         vibrator = null
 
+        abandonAlarmAudioFocus()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }

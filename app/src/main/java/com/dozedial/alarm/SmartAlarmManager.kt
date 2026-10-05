@@ -59,12 +59,6 @@ object SmartAlarmManager {
 
         val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            if (!alarmManager.canScheduleExactAlarms()) {
-                Log.w(TAG, "SCHEDULE_EXACT_ALARM permission not granted by user")
-            }
-        }
-
         val targetMs = config.getNextTargetEpochMs()
         val intent = Intent(context, SmartAlarmReceiver::class.java).apply {
             action = SmartAlarmReceiver.ACTION_SAFETY_CUTOFF
@@ -78,15 +72,41 @@ object SmartAlarmManager {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        var canExact = true
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            canExact = alarmManager.canScheduleExactAlarms()
+            if (!canExact) {
+                Log.w(TAG, "SCHEDULE_EXACT_ALARM permission not granted by user; using setAndAllowWhileIdle")
+            }
+        }
+
         try {
-            alarmManager.setExactAndAllowWhileIdle(
-                AlarmManager.RTC_WAKEUP,
-                targetMs,
-                pendingIntent
-            )
-            Log.i(TAG, "Scheduled exact safety alarm for timestamp $targetMs (${config.formattedTargetTime()})")
+            if (canExact) {
+                alarmManager.setExactAndAllowWhileIdle(
+                    AlarmManager.RTC_WAKEUP,
+                    targetMs,
+                    pendingIntent
+                )
+                Log.i(TAG, "Scheduled exact safety alarm for timestamp $targetMs (${config.formattedTargetTime()})")
+            } else {
+                alarmManager.setAndAllowWhileIdle(
+                    AlarmManager.RTC_WAKEUP,
+                    targetMs,
+                    pendingIntent
+                )
+                Log.i(TAG, "Scheduled fallback safety alarm for timestamp $targetMs (${config.formattedTargetTime()})")
+            }
         } catch (e: SecurityException) {
-            Log.e(TAG, "Failed to schedule exact alarm due to security policy", e)
+            Log.w(TAG, "SecurityException on setExactAndAllowWhileIdle, falling back to setAndAllowWhileIdle", e)
+            try {
+                alarmManager.setAndAllowWhileIdle(
+                    AlarmManager.RTC_WAKEUP,
+                    targetMs,
+                    pendingIntent
+                )
+            } catch (e2: Exception) {
+                Log.e(TAG, "Failed completely to schedule safety alarm", e2)
+            }
         }
     }
 

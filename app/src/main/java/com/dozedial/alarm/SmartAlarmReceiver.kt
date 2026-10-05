@@ -19,7 +19,19 @@ class SmartAlarmReceiver : BroadcastReceiver() {
 
         Log.i(TAG, "Received alarm intent action: $action, reason: $reason, stage: $stageName")
 
-        // 1. Start alarm playback service (audio crescendo and haptics)
+        // 1. Acquire temporary wakelock to ensure CPU stays awake while starting playback
+        val powerManager = context.getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
+        val wakeLock = powerManager?.newWakeLock(
+            android.os.PowerManager.PARTIAL_WAKE_LOCK,
+            "DozeDial:SmartAlarmReceiverWakeLock"
+        )
+        try {
+            wakeLock?.acquire(60_000L) // 1 minute safety timeout
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to acquire wake lock in receiver", e)
+        }
+
+        // 2. Start alarm playback service (audio crescendo and haptics)
         val serviceIntent = Intent(context, AlarmPlaybackService::class.java).apply {
             this.action = AlarmPlaybackService.ACTION_START_ALARM
             putExtra(EXTRA_REASON, reason)
@@ -31,16 +43,18 @@ class SmartAlarmReceiver : BroadcastReceiver() {
             Log.e(TAG, "Failed to start AlarmPlaybackService", e)
         }
 
-        // 2. Launch full-screen lockscreen wake activity
+        // 3. Launch full-screen lockscreen wake activity
         val wakeIntent = Intent(context, AlarmWakeActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
             putExtra(EXTRA_REASON, reason)
             putExtra(EXTRA_STAGE, stageName)
         }
         try {
             context.startActivity(wakeIntent)
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to launch AlarmWakeActivity", e)
+            Log.e(TAG, "Failed to launch AlarmWakeActivity directly (Notification fullScreenIntent is active fallback)", e)
         }
     }
 

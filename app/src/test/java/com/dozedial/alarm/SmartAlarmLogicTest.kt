@@ -66,6 +66,19 @@ class SmartAlarmLogicTest {
     }
 
     @Test
+    fun evaluateTrigger_exactCutoff_triggersHardCutoff() {
+        val now = targetMs // 7:30:00 AM exactly
+        val decision = SmartAlarmManager.evaluateTrigger(
+            nowMs = now,
+            targetMs = targetMs,
+            windowMinutes = windowMinutes,
+            currentStage = SleepStage.DEEP
+        )
+
+        assertEquals(SmartAlarmManager.TriggerDecision.HARD_CUTOFF, decision)
+    }
+
+    @Test
     fun evaluateTrigger_hardCutoffReached_triggersHardCutoffEvenInDeep() {
         val now = targetMs + 1000L // 7:30:01 AM
         val decision = SmartAlarmManager.evaluateTrigger(
@@ -76,6 +89,48 @@ class SmartAlarmLogicTest {
         )
 
         assertEquals(SmartAlarmManager.TriggerDecision.HARD_CUTOFF, decision)
+    }
+
+    @Test
+    fun evaluateTrigger_afterCutoff_triggersHardCutoffEvenInRem() {
+        val now = targetMs + 5000L // 7:30:05 AM
+        val decision = SmartAlarmManager.evaluateTrigger(
+            nowMs = now,
+            targetMs = targetMs,
+            windowMinutes = windowMinutes,
+            currentStage = SleepStage.REM
+        )
+
+        assertEquals(SmartAlarmManager.TriggerDecision.HARD_CUTOFF, decision)
+    }
+
+    @Test
+    fun sessionTargetPinning_avoidsDynamicRolloverBug() {
+        val config = AlarmConfig(targetHour = 7, targetMinute = 30)
+        // Simulate session start at 11:30 PM (23:30)
+        val calendar = java.util.Calendar.getInstance().apply {
+            set(java.util.Calendar.HOUR_OF_DAY, 23)
+            set(java.util.Calendar.MINUTE, 30)
+            set(java.util.Calendar.SECOND, 0)
+            set(java.util.Calendar.MILLISECOND, 0)
+        }
+        val sessionStartMs = calendar.timeInMillis
+        val pinnedTargetMs = config.getNextTargetEpochMs(sessionStartMs)
+
+        // At 7:30:01 AM next morning, evaluate with pinned target
+        val wakeTimeMs = pinnedTargetMs + 1000L
+        val decision = SmartAlarmManager.evaluateTrigger(
+            nowMs = wakeTimeMs,
+            targetMs = pinnedTargetMs,
+            windowMinutes = config.smartWindowMinutes,
+            currentStage = SleepStage.DEEP
+        )
+
+        assertEquals(
+            "Hard cutoff must fire when now exceeds pinned session target",
+            SmartAlarmManager.TriggerDecision.HARD_CUTOFF,
+            decision
+        )
     }
 
     @Test

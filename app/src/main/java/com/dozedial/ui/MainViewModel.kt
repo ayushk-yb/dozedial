@@ -250,9 +250,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun oneTapSleep() {
         val current = alarmPrefs.loadConfig()
-        if (!current.isEnabled) {
-            updateAlarmConfig(current.copy(isEnabled = true))
-        }
+        val updated = if (!current.isEnabled) current.copy(isEnabled = true) else current
+        updateAlarmConfig(updated)
         startOvernightRecording()
     }
 
@@ -293,6 +292,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun startOvernightRecording() {
+        val alarmConfig = alarmPrefs.loadConfig()
+        if (alarmConfig.isEnabled) {
+            SmartAlarmManager.scheduleExactSafetyAlarm(getApplication(), alarmConfig)
+        }
         val connState = heartRateMonitor.connectionState.value
         val (address, name) = when (connState) {
             is BleConnectionState.Connected -> Pair(connState.deviceAddress, connState.deviceName)

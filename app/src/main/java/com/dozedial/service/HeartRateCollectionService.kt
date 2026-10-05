@@ -102,6 +102,9 @@ class HeartRateCollectionService : Service() {
 
     private val featureExtractor = SleepFeatureExtractor(windowSize = 300)
     private var cachedBaseline: UserSleepBaselineEntity = UserSleepBaselineEntity.default()
+    private var sessionAlarmTargetEpochMs: Long? = null
+    private var sessionAlarmWindowStartMs: Long? = null
+    private var currentSleepStage: SleepStage = SleepStage.WAKE
     private var alarmTriggeredThisSession = false
 
     private val buffer = mutableListOf<HeartRateRecordEntity>()
@@ -146,7 +149,19 @@ class HeartRateCollectionService : Service() {
         totalSampleCounter = 0
         latestBpm = null
         featureExtractor.reset()
+        currentSleepStage = SleepStage.WAKE
         alarmTriggeredThisSession = false
+
+        val alarmConfig = AlarmPreferences(this).loadConfig()
+        if (alarmConfig.isEnabled) {
+            val target = alarmConfig.getNextTargetEpochMs(sessionStartTimeMs)
+            sessionAlarmTargetEpochMs = target
+            sessionAlarmWindowStartMs = target - (alarmConfig.smartWindowMinutes * 60 * 1000L)
+            Log.i(TAG, "Pinned session alarm target: $target (${alarmConfig.formattedTargetTime()}), windowStart: $sessionAlarmWindowStartMs")
+        } else {
+            sessionAlarmTargetEpochMs = null
+            sessionAlarmWindowStartMs = null
+        }
 
         val initialNotification = buildNotification(
             bpm = null,
@@ -216,38 +231,10 @@ class HeartRateCollectionService : Service() {
                 featureExtractor.addSample(sample.bpm)
                 val features = featureExtractor.computeFeatures(cachedBaseline.rollingRhr)
                 val stage = SleepStageClassifier.classify(features, cachedBaseline)
+                currentSleepStage = stage
 
                 // 2. Evaluate Smart-Alarm trigger if active
-                if (!alarmTriggeredThisSession) {
-                    val alarmConfig = AlarmPreferences(this@HeartRateCollectionService).loadConfig()
-                    if (alarmConfig.isEnabled) {
-                        val now = System.currentTimeMillis()
-                        val targetMs = alarmConfig.getNextTargetEpochMs(now)
-                        val decision = SmartAlarmManager.evaluateTrigger(
-                            nowMs = now,
-                            targetMs = targetMs,
-                            windowMinutes = alarmConfig.smartWindowMinutes,
-                            currentStage = stage
-                        )
-                        if (decision == SmartAlarmManager.TriggerDecision.SMART_LIGHT_SLEEP) {
-                            alarmTriggeredThisSession = true
-                            Log.i(TAG, "Smart alarm triggered in optimal waking stage: $stage")
-                            SmartAlarmManager.triggerAlarmNow(
-                                context = this@HeartRateCollectionService,
-                                reason = "Optimal Light Sleep Window Detected",
-                                stage = stage
-                            )
-                        } else if (decision == SmartAlarmManager.TriggerDecision.HARD_CUTOFF) {
-                            alarmTriggeredThisSession = true
-                            Log.i(TAG, "Smart alarm triggered at target hard cutoff")
-                            SmartAlarmManager.triggerAlarmNow(
-                                context = this@HeartRateCollectionService,
-                                reason = "Target Alarm Cutoff Reached",
-                                stage = stage
-                            )
-                        }
-                    }
-                }
+                checkAlarmTrigger(stage)
 
                 var itemsToFlush: List<HeartRateRecordEntity>? = null
                 bufferMutex.withLock {
@@ -283,6 +270,9 @@ class HeartRateCollectionService : Service() {
                 val elapsed = (System.currentTimeMillis() - sessionStartTimeMs) / 1000L
                 _recordingState.update { it.copy(elapsedSeconds = elapsed) }
 
+                // Continuous 1 Hz alarm safety check - guarantees alarm fires even if BLE packets pause
+                checkAlarmTrigger(currentSleepStage)
+
                 // Periodic flush every 5 seconds
                 if (elapsed % 5L == 0L) {
                     flushPendingBuffer()
@@ -290,6 +280,55 @@ class HeartRateCollectionService : Service() {
 
                 // Update notification display
                 updateNotification(latestBpm, elapsed, totalSampleCounter)
+            }
+        }
+    }
+
+    private fun checkAlarmTrigger(stage: SleepStage) {
+        if (alarmTriggeredThisSession) return
+
+        val alarmConfig = AlarmPreferences(this).loadConfig()
+        if (!alarmConfig.isEnabled) return
+
+        // Use pinned target calculated at session start, or calculate relative to session start
+        val targetMs = sessionAlarmTargetEpochMs ?: run {
+            val refTime = if (sessionStartTimeMs > 0) sessionStartTimeMs else System.currentTimeMillis()
+            val target = alarmConfig.getNextTargetEpochMs(refTime)
+            sessionAlarmTargetEpochMs = target
+            sessionAlarmWindowStartMs = target - (alarmConfig.smartWindowMinutes * 60 * 1000L)
+            Log.i(TAG, "Initialized pinned alarm target: $target (${alarmConfig.formattedTargetTime()})")
+            target
+        }
+
+        val now = System.currentTimeMillis()
+        val decision = SmartAlarmManager.evaluateTrigger(
+            nowMs = now,
+            targetMs = targetMs,
+            windowMinutes = alarmConfig.smartWindowMinutes,
+            currentStage = stage
+        )
+
+        when (decision) {
+            SmartAlarmManager.TriggerDecision.SMART_LIGHT_SLEEP -> {
+                alarmTriggeredThisSession = true
+                Log.i(TAG, "Smart alarm triggered in optimal waking stage: $stage (now=$now, target=$targetMs)")
+                SmartAlarmManager.triggerAlarmNow(
+                    context = this,
+                    reason = "Optimal Light Sleep Window Detected",
+                    stage = stage
+                )
+            }
+            SmartAlarmManager.TriggerDecision.HARD_CUTOFF -> {
+                alarmTriggeredThisSession = true
+                Log.i(TAG, "Smart alarm triggered at target hard cutoff (now=$now, target=$targetMs, stage=$stage)")
+                SmartAlarmManager.triggerAlarmNow(
+                    context = this,
+                    reason = "Target Alarm Cutoff Reached",
+                    stage = stage
+                )
+            }
+            SmartAlarmManager.TriggerDecision.NO_TRIGGER -> {
+                // Continue monitoring
             }
         }
     }
@@ -366,6 +405,9 @@ class HeartRateCollectionService : Service() {
                 }
             }
 
+            sessionAlarmTargetEpochMs = null
+            sessionAlarmWindowStartMs = null
+            alarmTriggeredThisSession = false
             _recordingState.value = RecordingState(isRecording = false)
             releaseWakeLock()
             stopForeground(STOP_FOREGROUND_REMOVE)
