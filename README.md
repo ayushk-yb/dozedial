@@ -10,7 +10,8 @@
 
 > ### 📱 Quick Download & Install
 > **Click here to download the latest installable Android package directly:**  
-> 🔗 [**Download DozeDial v1.0.0 APK (DozeDial-v1.0.0.apk)**](https://github.com/ayushk-yb/dozedial/releases/latest/download/DozeDial-v1.0.0.apk)  
+> 🔗 [**Download DozeDial v1.0.0 APK (DozeDial-v1.0.0.apk)**](https://github.com/ayushk-yb/dozedial/releases/download/v1.0.0/DozeDial-v1.0.0.apk)  
+> 📦 [**View All Release Notes & Assets (v1.0.0)**](https://github.com/ayushk-yb/dozedial/releases/tag/v1.0.0)  
 > *(Pre-compiled, signed, and ready to install on Android 8.0 to Android 15)*
 
 ---
