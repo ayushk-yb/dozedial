@@ -1,10 +1,19 @@
 # DozeDial — Autonomous On-Device Sleep Staging & Smart-Alarm
 
+[![Download APK](https://img.shields.io/badge/Download%20APK-v1.0.0%20Latest-success?style=for-the-badge&logo=android&logoColor=white)](https://github.com/ayushk-yb/dozedial/releases/latest/download/DozeDial-v1.0.0.apk)
+
 [![Android](https://img.shields.io/badge/Platform-Android%208.0%2B%20%28API%2026--35%29-3DDC84?logo=android&logoColor=white)](https://developer.android.com)
 [![Kotlin](https://img.shields.io/badge/Language-Kotlin%202.0-7F52FF?logo=kotlin&logoColor=white)](https://kotlinlang.org)
 [![Compose](https://img.shields.io/badge/UI-Jetpack%20Compose-4285F4?logo=jetpackcompose&logoColor=white)](https://developer.android.com/jetpack/compose)
 [![Privacy First](https://img.shields.io/badge/Privacy-100%25%20On--Device%20%2F%20Zero--Cloud-10B981)](#privacy-first--zero-cloud)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+
+> ### 📱 Quick Download & Install
+> **Click here to download the latest installable Android package directly:**  
+> 🔗 [**Download DozeDial v1.0.0 APK (DozeDial-v1.0.0.apk)**](https://github.com/ayushk-yb/dozedial/releases/latest/download/DozeDial-v1.0.0.apk)  
+> *(Pre-compiled, signed, and ready to install on Android 8.0 to Android 15)*
+
+---
 
 **DozeDial** is an autonomous, on-device smart alarm and sleep analytics application. By tapping directly into real-time physiological telemetry streamed over standard Bluetooth Low Energy (BLE) from wearables (such as the **Fitbit Air**), DozeDial continuously classifies autonomic sleep stages and wakes you during optimal light sleep within a customizable pre-alarm window—completely eliminating sleep inertia.
 
